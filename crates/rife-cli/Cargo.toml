@@ -1,0 +1,28 @@
+[package]
+name = "rife-cli"
+authors.workspace = true
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Video interpolation and pitch-preserving slow motion with embedded RIFE NCNN/Vulkan"
+repository = "https://github.com/voximir-p/rife"
+
+[[bin]]
+name = "rife"
+path = "src/main.rs"
+
+[dependencies]
+rife-core.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+ctrlc.workspace = true
+dunce.workspace = true
+indicatif.workspace = true
+console.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+fs2.workspace = true

@@ -1,0 +1,51 @@
+name: Windows build
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@1.88.0
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Ensure Ninja is installed
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
+            choco install ninja --yes --no-progress
+          }
+
+      - name: Cache pinned native sources
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/ncnn
+            third_party/Vulkan-Headers
+          key: native-sources-windows-x64-${{ hashFiles('third_party/dependencies.lock') }}
+
+      - name: Fetch pinned native dependencies
+        shell: pwsh
+        run: ./scripts/fetch-dependencies.ps1
+
+      - name: Install cargo-about
+        run: cargo install --locked --features cli --version 0.9.3 cargo-about
+
+      - name: Check dependency license report
+        shell: pwsh
+        run: ./scripts/generate-third-party-licenses.ps1 -Check
+
+      - name: Build release executable
+        run: cargo build --locked --release

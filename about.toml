@@ -1,0 +1,11 @@
+# License policy for Rust crates shipped in the Windows x64 executable.
+accepted = [
+    "GPL-3.0-only",
+    "Apache-2.0",
+    "MIT",
+    "Unicode-3.0",
+]
+
+targets = ["x86_64-pc-windows-msvc"]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true

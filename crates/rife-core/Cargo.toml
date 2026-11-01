@@ -1,0 +1,18 @@
+[package]
+name = "rife-core"
+authors.workspace = true
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Safe streaming RIFE interpolation with statically linked NCNN/Vulkan"
+links = "rife_native"
+
+[dependencies]
+anyhow.workspace = true
+
+[build-dependencies]
+cmake.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
