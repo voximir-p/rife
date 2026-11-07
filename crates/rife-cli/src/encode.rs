@@ -4,7 +4,10 @@
 use crate::{Args, config, media::Rate};
 use anyhow::Context;
 use rife_core::CancellationToken;
-use std::{path::Path, process::Command};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 const DEFAULT_AUDIO_BITRATE: &str = "192k";
 const AAC_BITRATE_SCALE_NUM: u64 = 124;
@@ -277,7 +280,7 @@ fn scale_fallback_bitrate(
     Ok(scaled as u64)
 }
 
-pub(crate) fn requires_audio_retiming(speed: f64) -> bool {
+pub(crate) fn requires_retiming(speed: f64) -> bool {
     (speed - 1.0).abs() >= RETIMING_EPSILON
 }
 
@@ -293,7 +296,7 @@ fn append_audio_options(
     // Keep the original encoded stream intact at normal playback speed. The
     // rounded frame schedule can produce a tiny duration difference even when
     // --speed is 1, which should not trigger an audio transcode.
-    let retiming = !preserve_source && requires_audio_retiming(speed);
+    let retiming = !preserve_source && requires_retiming(speed);
     if retiming {
         cmd.args([
             "-filter:a",
@@ -386,10 +389,16 @@ fn tempo_filter(mut speed: f64) -> String {
 pub(crate) struct Timing {
     pub rate: Rate,
     pub video_quality: VideoQuality,
-    pub audio_speed: f64,
+    // Match all timed source streams to the actual whole-frame output duration.
+    pub speed: f64,
     pub duration: f64,
-    pub preserve_source_audio: bool,
+    pub preserve_source_timing: bool,
     pub source_audio_bitrates: Vec<Option<u64>>,
+    pub chapter_metadata: Option<PathBuf>,
+}
+
+pub(crate) fn supports_timed_metadata(extension: &str) -> bool {
+    !Container::from_extension(extension).has_video_only_output()
 }
 
 pub(crate) fn command(
@@ -419,6 +428,9 @@ pub(crate) fn command(
     // FFmpeg requires every input to appear before output-specific options such as -map.
     if !video_only {
         cmd.arg("-i").arg(input);
+        if let Some(metadata) = &timing.chapter_metadata {
+            cmd.args(["-f", "ffmetadata", "-i"]).arg(metadata);
+        }
     }
     if container == Container::Gif && args.video_codec.is_none() {
         cmd.args([
@@ -435,19 +447,42 @@ pub(crate) fn command(
 
     append_video_options(&mut cmd, container, args, &timing.video_quality);
     if !video_only {
-        cmd.args(["-map", "1:a?", "-map_metadata", "1", "-map_chapters", "1"]);
+        let chapter_input = if timing.chapter_metadata.is_some() {
+            "2"
+        } else {
+            "1"
+        };
+        cmd.args([
+            "-map",
+            "1:a?",
+            "-map_metadata",
+            "1",
+            "-map_chapters",
+            chapter_input,
+        ]);
         if container == Container::Matroska {
             cmd.args([
                 "-map", "1:s?", "-map", "1:t?", "-c:s", "copy", "-c:t", "copy",
             ]);
+            if !timing.preserve_source_timing && requires_retiming(timing.speed) {
+                // Stream copying retains subtitle styles and attachments. Scale
+                // both timestamps and durations: -itsscale only changes the former.
+                cmd.args([
+                    "-bsf:s",
+                    &format!(
+                        "setts=ts=TS/{0:.17}:duration=DURATION/{0:.17}",
+                        timing.speed
+                    ),
+                ]);
+            }
         }
         append_audio_options(
             &mut cmd,
             container,
             args,
-            timing.audio_speed,
+            timing.speed,
             timing.duration,
-            timing.preserve_source_audio,
+            timing.preserve_source_timing,
             &timing.source_audio_bitrates,
         );
     }

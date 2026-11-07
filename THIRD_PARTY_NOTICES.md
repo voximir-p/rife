@@ -3,9 +3,13 @@
 Copyright (C) 2026 Voximir.
 
 The rife project code is licensed under the GNU General Public License version
-3 only; see [LICENSE](LICENSE). Release archives include the corresponding
-source code, this notice, native component license files, and the generated
-Rust dependency license report.
+
+3 only; see [LICENSE](LICENSE). Releases provide corresponding source code
+as the separate `rife-source.tar.gz` download. Binary archives
+include this notice, native component license files, and the generated Rust
+dependency license report. Download the source bundle from the same release
+as the executable; it includes pinned NCNN/glslang/Vulkan-Headers sources,
+locked Rust crate sources, and build instructions in `BUILD-SOURCE.md`.
 
 ## Code included in the executable
 
@@ -25,12 +29,16 @@ Rust dependency license report.
 - **glslang** — statically linked shader compiler components, with multiple
   applicable licenses and notices. The complete license file from the pinned
   source is included at [GLSLANG-LICENSE.txt](LICENSES/native/GLSLANG-LICENSE.txt).
-- **Vulkan-Headers** — Vulkan API headers, licensed under Apache-2.0 or MIT;
+- **Vulkan-Headers** — the pinned Vulkan API headers used here are licensed under Apache-2.0;
   the source license is included at
   [VULKAN-HEADERS-LICENSE.txt](LICENSES/native/VULKAN-HEADERS-LICENSE.txt).
 - **Rust crates** — third-party Rust crate notices and license texts for the
   Windows x64 dependency graph are generated with `cargo-about` from
   `Cargo.lock` and included in `THIRD-PARTY-LICENSES.html`.
+- **Rust standard library** — compiler-supplied library notices are included
+  in [RUST-STANDARD-LIBRARY.html](LICENSES/RUST-STANDARD-LIBRARY.html), separately
+  from the Cargo dependency report. Release builds verify these against the
+  compiler's installed notices.
 
 ## Separately downloaded runtime files
 

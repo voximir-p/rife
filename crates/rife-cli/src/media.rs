@@ -1,6 +1,7 @@
 // Copyright (C) 2026 Voximir.
 // SPDX-License-Identifier: GPL-3.0-only
 
+use crate::chapters::Chapter;
 use anyhow::{Context, Result};
 use rife_core::CancellationToken;
 use serde::Deserialize;
@@ -10,7 +11,8 @@ const PROBE_ENTRIES: &str = concat!(
     "stream=index,codec_type,width,height,avg_frame_rate,r_frame_rate,color_transfer,bit_rate,duration:",
     "stream_side_data=rotation:",
     "stream_tags=encoder,comment,description,title,handler_name,encoded_by,writing_library,encoding_tool,software,crf,encoder_settings,encoder_options,ENCODER,COMMENT,DESCRIPTION,TITLE,HANDLER_NAME,ENCODED_BY,WRITING_LIBRARY,ENCODING_TOOL,SOFTWARE,CRF,ENCODER_SETTINGS,ENCODER_OPTIONS:",
-    "format=duration:",
+    "chapter=time_base,start,end:chapter_tags:",
+    "format=duration,start_time:",
     "format_tags=encoder,comment,description,title,encoded_by,writing_library,encoding_tool,software,crf,encoder_settings,encoder_options,ENCODER,COMMENT,DESCRIPTION,TITLE,ENCODED_BY,WRITING_LIBRARY,ENCODING_TOOL,SOFTWARE,CRF,ENCODER_SETTINGS,ENCODER_OPTIONS"
 );
 
@@ -117,10 +119,13 @@ fn gcd(mut a: u64, mut b: u64) -> u64 {
 struct Probe {
     streams: Vec<MediaStream>,
     format: Option<FormatInfo>,
+    #[serde(default)]
+    chapters: Vec<Chapter>,
 }
 #[derive(Deserialize)]
 struct FormatInfo {
     duration: Option<String>,
+    start_time: Option<String>,
     #[serde(default)]
     tags: HashMap<String, String>,
 }
@@ -152,6 +157,8 @@ pub(crate) struct VideoInfo {
     pub(crate) source_crf: Option<String>,
     pub(crate) video_bitrate: Option<u64>,
     pub(crate) audio_bitrates: Vec<Option<u64>>,
+    pub(crate) chapters: Vec<Chapter>,
+    pub(crate) source_start_time: f64,
 }
 pub(crate) fn probe(ffprobe: &Path, input: &Path, cancel: &CancellationToken) -> Result<VideoInfo> {
     let mut command = Command::new(ffprobe);
@@ -239,6 +246,14 @@ pub(crate) fn probe(ffprobe: &Path, input: &Path, cancel: &CancellationToken) ->
         ),
         video_bitrate,
         audio_bitrates,
+        source_start_time: probe
+            .format
+            .as_ref()
+            .and_then(|format| format.start_time.as_deref())
+            .and_then(|value| value.parse::<f64>().ok())
+            .filter(|value| value.is_finite())
+            .unwrap_or(0.0),
+        chapters: probe.chapters,
     })
 }
 fn parse_bitrate(source: Option<&str>) -> Option<u64> {

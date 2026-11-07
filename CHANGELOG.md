@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Release source bundles include pinned native dependencies and locked Rust crate sources for offline builds.
+- Include Rust standard-library notices and verify license reports before release builds.
+- Consolidate licensing guidance in the third-party notices and keep contributor documentation in source distributions.
+
+### Fixed
+
+- Retime chapter boundaries and MKV subtitle cue timestamps and durations alongside audio when playback speed changes, preserving chapter and subtitle metadata.
+
 ## [0.1.0] - 2026-11-04
 
 ### Added

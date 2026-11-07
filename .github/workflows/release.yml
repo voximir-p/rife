@@ -129,6 +129,14 @@ jobs:
           fi
       - name: "Fetch project dependencies"
         run: "sh ./scripts/fetch-dependencies.sh"
+      - name: "Install license reporter"
+        run: "cargo install cargo-about --locked --features cli --version 0.9.3"
+      - name: "Verify dependency licenses"
+        run: "./scripts/generate-third-party-licenses.ps1 -Check"
+      - name: "Install standard-library notices"
+        run: "rustup component add rust-docs"
+      - name: "Verify standard-library notices"
+        run: "python scripts/generate-rust-notices.py --check"
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest

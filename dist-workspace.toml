@@ -12,11 +12,16 @@ ci = "github"
 installers = []
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["x86_64-pc-windows-msvc"]
-# Generate and dist a source tarball
-source-tarball = true
+# A git-only tarball omits the statically linked dependency sources.
+source-tarball = false
 # Extra static files to include in each App (path relative to this Cargo.toml's dir)
-include = ["CONTRIBUTING.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "THIRD-PARTY-LICENSES.html", "LICENSES/"]
+auto-includes = false
+include = ["README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "THIRD-PARTY-LICENSES.html", "LICENSES/"]
 # Path that installers should place binaries in
 install-path = "CARGO_HOME"
 # Whether to install an updater program
 install-updater = false
+
+[[dist.extra-artifacts]]
+artifacts = ["target/rife-source.tar.gz"]
+build = ["python3", "scripts/package-source.py"]

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::{
-    Args, config, encode,
+    Args, chapters, config, encode,
     media::{self, Rate},
     output_lock::OutputLock,
     paths,
@@ -390,13 +390,14 @@ pub(crate) fn process(args: Args, cancel: CancellationToken) -> Result<()> {
     )?;
     let (scale_num, scale_den) = playback.fps_ratio()?;
     let output_rate = info.rate.scaled(scale_num, scale_den)?;
-    // Whole-frame rounding can extend the final interval. Match audio to the
-    // actual video duration while retaining pitch through atempo.
-    let audio_speed = args.fps_scale * input_frames as f64 / schedule.output_frames() as f64;
-    let audio_is_encoded = args.audio_codec.as_deref().map_or_else(
-        || encode::requires_audio_retiming(args.speed),
-        |codec| codec != "copy",
-    );
+    // Whole-frame rounding can extend the final interval. Match audio, subtitles,
+    // and chapters to the actual video duration.
+    let media_speed = args.fps_scale * input_frames as f64 / schedule.output_frames() as f64;
+    let retiming = encode::requires_retiming(args.speed);
+    let audio_is_encoded = args
+        .audio_codec
+        .as_deref()
+        .map_or_else(|| retiming, |codec| codec != "copy");
     ensure!(
         !audio_is_encoded || info.audio_bitrates.iter().all(Option::is_some),
         "could not determine every source audio bitrate"
@@ -431,6 +432,19 @@ pub(crate) fn process(args: Args, cancel: CancellationToken) -> Result<()> {
         .tempdir_in(parent)
         .context("unable to create temporary output staging directory")?;
     let staged = dunce::simplified(temp.path()).join(format!("encoded.{extension}"));
+    let chapter_metadata =
+        if retiming && encode::supports_timed_metadata(&extension) && !info.chapters.is_empty() {
+            let metadata = dunce::simplified(temp.path()).join("chapters.ffmetadata");
+            chapters::write_retimed(
+                &metadata,
+                &info.chapters,
+                info.source_start_time,
+                media_speed,
+            )?;
+            Some(metadata)
+        } else {
+            None
+        };
     let mut decoder = ManagedChild::spawn(
         decode_command(&ffmpeg, &input, info.rate),
         "FFmpeg decoding",
@@ -444,11 +458,12 @@ pub(crate) fn process(args: Args, cancel: CancellationToken) -> Result<()> {
         encode::Timing {
             rate: output_rate,
             video_quality,
-            audio_speed,
+            speed: media_speed,
             duration: schedule.output_frames() as f64 * output_rate.den as f64
                 / output_rate.num as f64,
-            preserve_source_audio: !encode::requires_audio_retiming(args.speed),
+            preserve_source_timing: !retiming,
             source_audio_bitrates: info.audio_bitrates.clone(),
+            chapter_metadata,
         },
         &extension,
         &args,

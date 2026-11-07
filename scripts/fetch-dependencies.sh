@@ -1,7 +1,7 @@
-## Copyright (C) 2026 Voximir.
+#!/bin/sh
+# Copyright (C) 2026 Voximir.
 # SPDX-License-Identifier: GPL-3.0-only
 
-!/bin/sh
 set -eu
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 fetch() {

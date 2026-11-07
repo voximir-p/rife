@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use clap::{
-    builder::styling::{AnsiColor, Color, Style, Styles as ClapStyles},
     CommandFactory, Parser,
+    builder::styling::{AnsiColor, Color, Style, Styles as ClapStyles},
 };
 use config::{APP_NAME, VERSION};
 use rife_core::{
@@ -12,11 +12,14 @@ use rife_core::{
 };
 use std::path::PathBuf;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
+mod chapters;
 mod config;
 mod encode;
+#[cfg(test)]
+mod encode_timing_tests;
 mod media;
 mod output_lock;
 mod paths;
@@ -366,15 +369,10 @@ mod tests {
                 assert_eq!(args.threshold, value.parse::<f64>().unwrap());
             }
             for value in ["NaN", "inf", "-0.1", "1.1", "invalid"] {
-                assert!(Args::try_parse_from([
-                    APP_NAME,
-                    "-i",
-                    "source.mp4",
-                    flag,
-                    value,
-                    "out.mp4"
-                ])
-                .is_err());
+                assert!(
+                    Args::try_parse_from([APP_NAME, "-i", "source.mp4", flag, value, "out.mp4"])
+                        .is_err()
+                );
             }
         }
     }

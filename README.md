@@ -9,6 +9,7 @@ The application is split into a reusable Rust library (`rife-core`) and the `rif
 - Increase or reduce output frame rate with `--fps-scale`.
 - Change playback speed independently with `--speed`.
 - Retiming audio uses pitch-preserving FFmpeg filters; at normal speed, audio is copied by default.
+- Retime chapter boundaries and MKV subtitle cue timestamps and durations when playback speed changes.
 - Detect scene cuts to avoid interpolating across unrelated frames.
 - Select the CPU, one or more GPUs, or automatic device selection.
 - Choose models by their directory name without maintaining a model-name allowlist.
@@ -35,7 +36,7 @@ rife/
         └── flownet.bin
 ```
 
-1. Download an FFmpeg build from the [official FFmpeg download page](https://ffmpeg.org/download.html). FFmpeg links to third-party Windows builds; choose one that includes `ffmpeg.exe` and `ffprobe.exe`. The default MP4 encoder uses `libx264`; FFmpeg documents that builds with libx264 are GPL-licensed. This project does not redistribute FFmpeg, and you must follow the license for the exact build you download if you redistribute it. Copy both executables from its `bin/` directory into the `ffmpeg/` folder shown above.
+1. Download an FFmpeg build from the [official FFmpeg download page](https://ffmpeg.org/download.html) that includes `ffmpeg.exe`, `ffprobe.exe`, and the `libx264` encoder. Copy both executables from its `bin/` directory into the `ffmpeg/` folder shown above.
 2. Download a RIFE NCNN model from the [upstream models directory](https://github.com/Erlonealpha/rife-ncnn-vulkan-ex/tree/ex/models). For the model you want, copy `flownet.param` and `flownet.bin` into `models/<model-directory>/`, preserving the directory name. For example, the default model belongs in `models/rife-v4.25/`.
 3. Install a current graphics driver with Vulkan support for GPU inference. CPU inference can be selected with `-g -1`.
 
@@ -43,7 +44,7 @@ The model directory name is selected with `-m`; rife checks the model files and 
 
 ## License
 
-rife project code is licensed under **GPL-3.0-only**; see [LICENSE](LICENSE). Release archives include the corresponding source, third-party notices, and dependency license report. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for included components and attributions.
+Licensed under **GPL-3.0-only**; see [LICENSE](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md). Each release provides a separate `rife-source.tar.gz` containing project and dependency sources.
 
 The currently compiled and runtime-tested platform is **Windows x64**. Linux and macOS support has not yet been verified; the layout above shows the Windows filenames.
 
@@ -93,6 +94,8 @@ rife -i input.mp4 -g -1,0 -j 1:2,2:2 -f 2 output.mp4
 
 FPS scale and playback speed must be finite, positive numbers. When speed changes, audio is re-encoded to match the final video duration while preserving pitch. At normal speed, audio is copied unless `--audio-codec` is supplied. The output container must support a copied audio codec; otherwise, choose a compatible encoder.
 
+Chapter boundaries and MKV subtitle cue timestamps and durations follow the same timing adjustment as audio. Chapter titles, subtitle styles, and MKV attachments are preserved. Changing only FPS leaves source subtitle and chapter timing unchanged. Subtitle streams are currently preserved only in MKV outputs.
+
 ## Models
 
 The default model is `rife-v4.25`. Use `-m` to select another installed model. Model names are resolved directly as directory names under `models/`; for example, `-m rife-v4.28-large` looks for `models/rife-v4.28-large`.
@@ -108,5 +111,5 @@ Build prerequisites, architecture notes, test commands, and dependency/license m
 - Only Windows x64 has been compiled and runtime-tested so far.
 - Multi-GPU hardware, Linux/macOS, broad 4K performance/stress cases, and HDR preservation are not verified; HDR is not preserved.
 - UHD, spatial TTA, and temporal TTA are not implemented for the supported RIFE v4 graphs.
-- Subtitle and chapter timestamps are not retimed when playback speed changes.
+- Timing embedded inside subtitle content, such as ASS karaoke/animation effects and DVD subtitle display commands, is not rewritten when playback speed changes.
 - Container and encoder implementations impose their own frame-rate, time-base, and quality limits.

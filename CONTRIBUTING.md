@@ -42,6 +42,16 @@ cargo clippy --workspace --all-targets --release --locked -- -D warnings
 cargo test --workspace --release --locked
 ```
 
+The opt-in muxing regressions generate small media fixtures and verify subtitle,
+chapter, and audio timing with FFmpeg/FFprobe. They do not require models or a GPU:
+
+```sh
+cargo test -p rife-cli --release --locked encode_timing_tests -- --ignored
+```
+
+These tests use `runtime/ffmpeg/ffmpeg` and `runtime/ffmpeg/ffprobe` (`.exe` on
+Windows). Set `RIFE_TEST_FFMPEG` and `RIFE_TEST_FFPROBE` to use other test binaries.
+
 The smoke script exercises the built CLI through the runtime directory layout. Put the executable, FFmpeg/FFprobe, and compatible `rife-v4.26` and `rife-v4.26-large` models under `runtime/` as shown in the README, then run on Windows:
 
 ```powershell
@@ -84,5 +94,18 @@ cargo install --locked --features cli --version 0.9.3 cargo-about
 ```
 
 Keep `THIRD-PARTY-LICENSES.html` current when workspace dependencies change. When a crate’s license changes, review `about.toml`. Native component attributions and license texts belong in `THIRD_PARTY_NOTICES.md` and `LICENSES/native/`; the release source archive includes these files and the GPL license text.
+
+The Rust standard-library notices are separate from Cargo crates. Install
+`rust-docs` and run `python scripts/generate-rust-notices.py` after a compiler
+update; `--check` verifies the checked-in copy against the release compiler.
+Release CI checks both reports before building the executable.
+
+From a clean, committed checkout, run `python3 scripts/package-source.py` to
+create `target/rife-source.tar.gz`. The release workflow publishes this bundle
+alongside the binary. It includes pinned native sources, locked Rust crates,
+their notices, and build scripts. Its generated Cargo configuration supports
+`cargo build --release --locked --offline` after installing the documented
+toolchains. Dependency downloads require network access when packaging;
+FFmpeg, model weights, Git history, and machine-local files are excluded.
 
 FFmpeg binaries and RIFE model weights are supplied separately by users. Do not add them to source or release artifacts. See the README and third-party notices for runtime and redistribution information.

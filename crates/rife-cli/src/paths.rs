@@ -62,7 +62,10 @@ pub(crate) fn validate_output(input: &Path, output: &Path, overwrite: bool) -> R
             dunce::canonicalize(output)? != input,
             "refusing to overwrite the original input"
         );
-        ensure!(overwrite, "output already exists (pass --overwrite to replace it)");
+        ensure!(
+            overwrite,
+            "output already exists (pass --overwrite to replace it)"
+        );
         ensure!(output.is_file(), "output path is not a file");
     }
     ensure!(
