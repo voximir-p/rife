@@ -79,7 +79,7 @@ fn main() {
         .unwrap_or_else(|| root.join("third_party").join(headers_dependency[0]));
     assert!(
         ncnn.join("glslang/CMakeLists.txt").is_file(),
-        "Missing NCNN sources: run scripts/fetch-dependencies.ps1 or scripts/fetch-dependencies.sh"
+        "Missing NCNN sources: run sh scripts/fetch-dependencies.sh"
     );
     let mut config = cmake::Config::new("native");
     config

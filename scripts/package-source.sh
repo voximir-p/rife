@@ -1,9 +1,18 @@
-#!/usr/bin/env python3
+#!/bin/sh
 # Copyright (C) 2026 Voximir.
 # SPDX-License-Identifier: GPL-3.0-only
+set -eu
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+if command -v python3 >/dev/null 2>&1 && python3 --version >/dev/null 2>&1; then
+    python=python3
+else
+    python=python
+fi
+exec "$python" - "$root" "$@" <<'PYTHON'
 """Build the release Corresponding Source bundle from a clean checkout."""
 
 import argparse
+import sys
 import os
 from pathlib import Path
 import shutil
@@ -11,7 +20,7 @@ import subprocess
 import tarfile
 import tempfile
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(sys.argv.pop(1)).resolve()
 
 
 def run(*args, cwd=ROOT, **kwargs):
@@ -25,7 +34,7 @@ def export_git(repository, destination):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(prog="package-source.sh", description=__doc__)
     parser.add_argument("--output", type=Path, default=ROOT / "target/rife-source.tar.gz")
     args = parser.parse_args()
     if run("git", "status", "--porcelain", "--untracked-files=normal").strip():
@@ -61,9 +70,9 @@ def main():
         export_git(ROOT, source)
         for name, path in dependencies:
             export_git(path, source / "third_party" / name)
-        config = run("cargo", "vendor", "--locked", "--versioned-dirs", str(source / "vendor"))
+        config = run("cargo", "vendor", "--locked", "--versioned-dirs", "vendor", cwd=source)
         with (source / ".cargo/config.toml").open("a") as config_file:
-            config_file.write("\n" + config.decode().replace(str(source / "vendor"), "vendor"))
+            config_file.write("\n" + config.decode())
         revision = run("git", "rev-parse", "HEAD").decode().strip()
         (source / "SOURCE-REVISION").write_text(revision + "\n")
         (source / "BUILD-SOURCE.md").write_text(
@@ -88,3 +97,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+PYTHON

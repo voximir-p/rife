@@ -7,6 +7,8 @@ This guide covers building, checking, and extending rife. For command-line usage
 - Rust 1.88 or newer
 - CMake 3.24 or newer
 - Ninja
+- A POSIX shell and standard Unix utilities (Git Bash on Windows)
+- Python 3 for smoke checks, source packaging, and compiler-library notices
 - On Windows, an MSVC C++ x64 toolchain
 - On Linux or macOS, the platform Vulkan development libraries and loader
 
@@ -16,21 +18,14 @@ Windows x64 and Linux x64 have been built and runtime-tested. macOS and other ar
 
 The native build uses pinned NCNN and Vulkan-Headers revisions from `third_party/dependencies.lock`. Fetch those sources before building; `build.rs` does not download them.
 
-On Windows PowerShell:
-
-```powershell
-./scripts/fetch-dependencies.ps1
-cargo build --locked --release
-```
-
-On Unix-like systems:
+Run the same scripts on Unix-like systems and in Git Bash on Windows:
 
 ```sh
 sh scripts/fetch-dependencies.sh
 cargo build --locked --release
 ```
 
-The fetch scripts verify the checked-out revisions and leave unexpected existing sources untouched. Builds can use existing source trees by setting `RIFE_NCNN_SOURCE` and `RIFE_VULKAN_HEADERS`.
+The fetch script verifies the checked-out revisions and leaves unexpected existing sources untouched. Builds can use existing source trees by setting `RIFE_NCNN_SOURCE` and `RIFE_VULKAN_HEADERS`.
 
 ## Checks and runtime smoke test
 
@@ -52,18 +47,22 @@ cargo test -p rife-cli --release --locked encode_timing_tests -- --ignored
 These tests use `runtime/ffmpeg/ffmpeg` and `runtime/ffmpeg/ffprobe` (`.exe` on
 Windows). Set `RIFE_TEST_FFMPEG` and `RIFE_TEST_FFPROBE` to use other test binaries.
 
-The smoke script exercises the built CLI through the runtime directory layout. Put the executable, FFmpeg/FFprobe, and compatible `rife-v4.26` and `rife-v4.26-large` models under `runtime/` as shown in the README, then run on Windows:
+The smoke script exercises the built CLI through the runtime directory layout. Put the executable, FFmpeg/FFprobe, and compatible `rife-v4.26` and `rife-v4.26-large` models under `runtime/` as shown in the README, then run:
 
-```powershell
-Copy-Item target/release/rife.exe runtime/rife.exe
-./scripts/smoke.ps1
+```sh
+# On Windows, copy target/release/rife.exe to runtime/rife.exe instead.
+cp target/release/rife runtime/rife
+sh scripts/smoke.sh
 ```
 
-The regular workspace test command does not run the opt-in native inference test. On Windows PowerShell, point it at an installed compatible model and run it serially:
+Pass a different runtime directory as the first argument to `smoke.sh`. Set
+`RIFE_SMOKE_GPU=-1` to run on CPU; the default is automatic device selection.
 
-```powershell
-$env:RIFE_TEST_MODEL_DIR = "$PWD/runtime/models/rife-v4.26"
-cargo test -p rife-core --release --test native -- --ignored --test-threads=1
+The regular workspace test command does not run the opt-in native inference test. Point it at an installed compatible model and run it serially:
+
+```sh
+RIFE_TEST_MODEL_DIR="$PWD/runtime/models/rife-v4.26" \
+  cargo test -p rife-core --release --test native -- --ignored --test-threads=1
 ```
 
 Repeat with each model directory being validated. Native inference coverage requires a compatible model; GPU coverage also requires a Vulkan-capable driver.
@@ -87,20 +86,20 @@ When changing the native dependency set or copied native code, update `third_par
 
 The Rust dependency license report is generated with cargo-about 0.9.3. The CI command installs only its `cli` feature:
 
-```powershell
+```sh
 cargo install --locked --features cli --version 0.9.3 cargo-about
-./scripts/generate-third-party-licenses.ps1
-./scripts/generate-third-party-licenses.ps1 -Check
+sh scripts/generate-third-party-licenses.sh
+sh scripts/generate-third-party-licenses.sh --check
 ```
 
 Keep `THIRD-PARTY-LICENSES.html` current when workspace dependencies change. When a crate’s license changes, review `about.toml`. Native component attributions and license texts belong in `THIRD_PARTY_NOTICES.md` and `LICENSES/native/`; the release source archive includes these files and the GPL license text.
 
 The Rust standard-library notices are separate from Cargo crates. Install
-`rust-docs` and run `python scripts/generate-rust-notices.py` after a compiler
+`rust-docs` and run `sh scripts/generate-rust-notices.sh` after a compiler
 update; `--check` verifies the checked-in copy against the release compiler.
 Release CI checks both reports before building the executable.
 
-From a clean, committed checkout, run `python3 scripts/package-source.py` to
+From a clean, committed checkout, run `sh scripts/package-source.sh` to
 create `target/rife-source.tar.gz`. The release workflow publishes this bundle
 alongside the binary. It includes pinned native sources, locked Rust crates,
 their notices, and build scripts. Its generated Cargo configuration supports

@@ -25,4 +25,4 @@ install-updater = false
 
 [[dist.extra-artifacts]]
 artifacts = ["target/rife-source.tar.gz"]
-build = ["python3", "scripts/package-source.py"]
+build = ["sh", "scripts/package-source.sh"]

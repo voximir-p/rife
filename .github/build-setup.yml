@@ -1,10 +1,15 @@
 - name: Fetch project dependencies
+  shell: bash
   run: sh ./scripts/fetch-dependencies.sh
 - name: Install license reporter
+  shell: bash
   run: cargo install cargo-about --locked --features cli --version 0.9.3
 - name: Verify dependency licenses
-  run: ./scripts/generate-third-party-licenses.ps1 -Check
+  shell: bash
+  run: sh ./scripts/generate-third-party-licenses.sh --check
 - name: Install standard-library notices
+  shell: bash
   run: rustup component add rust-docs
 - name: Verify standard-library notices
-  run: python scripts/generate-rust-notices.py --check
+  shell: bash
+  run: sh ./scripts/generate-rust-notices.sh --check
