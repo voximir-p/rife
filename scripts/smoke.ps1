@@ -55,7 +55,7 @@ $original = Get-Hashes $source
 foreach ($threshold in @('0.3', '0', '1')) {
     $output = Join-Path $testRoot "threshold-$threshold.nut"
     $lines = Invoke-Rife -Arguments @('-i', $source, '-m', 'rife-v4.26', '-t', $threshold, '--video-codec', 'ffv1', '-y', $output)
-    if ($lines.Count -ne 2 -or "$($lines[0])" -notmatch '^ +.+ video$' -or "$($lines[1])" -notmatch '^    Finished interpolating 12 frames in [0-9]+\.[0-9]{2}s$') { throw "Normal logging changed: $($lines -join ' | ')" }
+    if ($lines.Count -ne 2 -or "$($lines[0])" -notmatch '^ +.+ video$' -or "$($lines[1])" -notmatch '^    Finished interpolating 12 frames in (?:[0-9]+\.[0-9]{2}s|[0-9]+m [0-9]+s)$') { throw "Normal logging changed: $($lines -join ' | ')" }
     if (($lines -join "`n") -match 'Done:|~|\x1b') { throw 'Completed redirected output contains stale estimates, a banner, or ANSI escapes' }
     $hashes = Get-Hashes $output
     if ($hashes.Count -ne 12) { throw 'Incorrect output frame count' }

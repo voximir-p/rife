@@ -266,10 +266,15 @@ fn persist_line(bar: &ProgressBar, term: &dyn indicatif::TermLike, line: &str) {
 }
 
 fn finished(frames: u64, elapsed: Duration, palette: Palette) -> String {
-    let detail = style(format!(
-        "interpolating {frames} frames in {:.2}s",
-        elapsed.as_secs_f64()
-    ));
+    let time = if elapsed.as_secs() >= 60 {
+        let seconds = elapsed
+            .as_secs()
+            .saturating_add(u64::from(elapsed.subsec_nanos() >= 500_000_000));
+        format!("{}m {}s", seconds / 60, seconds % 60)
+    } else {
+        format!("{:.2}s", elapsed.as_secs_f64())
+    };
+    let detail = style(format!("interpolating {frames} frames in {time}"));
     format!("{} {detail}", palette.label("Finished"))
 }
 
@@ -581,6 +586,24 @@ mod tests {
             colored.ends_with("\x1b[0m interpolating 424 frames in 0.12s"),
             "{colored:?}"
         );
+        for (milliseconds, expected) in [
+            (59_990, "59.99s"),
+            (60_000, "1m 0s"),
+            (60_490, "1m 0s"),
+            (60_500, "1m 1s"),
+            (89_900, "1m 30s"),
+            (119_490, "1m 59s"),
+            (119_500, "2m 0s"),
+            (3_600_000, "60m 0s"),
+        ] {
+            assert_eq!(
+                finished(12820, Duration::from_millis(milliseconds), palette),
+                format!(
+                    "{} interpolating 12820 frames in {expected}",
+                    padded("Finished")
+                )
+            );
+        }
         for label in ["Source", "Target", "Device", "Loading", "Encoding"] {
             let aligned = palette.label(label);
             assert_eq!(measure_text_width(&aligned), LABEL_WIDTH);

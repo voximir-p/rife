@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Format completion times of at least one minute as minutes and rounded, unpadded seconds.
 - Release source bundles include pinned native dependencies and locked Rust crate sources for offline builds.
 - Include Rust standard-library notices and verify license reports before release builds.
 - Consolidate licensing guidance in the third-party notices and keep contributor documentation in source distributions.
