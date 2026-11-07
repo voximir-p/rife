@@ -8,6 +8,12 @@ rust-version.workspace = true
 description = "Video interpolation and pitch-preserving slow motion with embedded RIFE NCNN/Vulkan"
 repository = "https://github.com/voximir-p/rife"
 
+[package.metadata.wix]
+upgrade-guid = "33BB655E-081F-4E78-A49D-809B0A140336"
+path-guid = "A3A5E9F0-FB90-4880-9173-1B842BCA783F"
+license = false
+eula = false
+
 [[bin]]
 name = "rife"
 path = "src/main.rs"

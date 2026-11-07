@@ -15,7 +15,7 @@
 
 name: Release
 permissions:
-  contents: read
+  "contents": "write"
 
 # This task will run whenever you push a git tag that looks like a version
 # like "1.0.0", "v0.1.0-prerelease.1", "my-app/0.1.0", "releases/v1.0.0", etc.
@@ -127,6 +127,8 @@ jobs:
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           fi
+      - name: "Fetch project dependencies"
+        run: "sh ./scripts/fetch-dependencies.sh"
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest
@@ -139,29 +141,6 @@ jobs:
       - name: Install dependencies
         run: |
           ${{ matrix.packages_install }}
-      - name: Set up the Windows C++ compiler
-        if: ${{ contains(matrix.targets, 'x86_64-pc-windows-msvc') }}
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-      - name: Ensure Ninja is installed
-        if: ${{ contains(matrix.targets, 'x86_64-pc-windows-msvc') }}
-        shell: pwsh
-        run: |
-          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
-            choco install ninja --yes --no-progress
-          }
-      - name: Fetch pinned native build dependencies
-        if: ${{ contains(matrix.targets, 'x86_64-pc-windows-msvc') }}
-        shell: pwsh
-        run: ./scripts/fetch-dependencies.ps1
-      - name: Install cargo-about
-        if: ${{ contains(matrix.targets, 'x86_64-pc-windows-msvc') }}
-        run: cargo install --locked --features cli --version 0.9.3 cargo-about
-      - name: Check dependency license report
-        if: ${{ contains(matrix.targets, 'x86_64-pc-windows-msvc') }}
-        shell: pwsh
-        run: ./scripts/generate-third-party-licenses.ps1 -Check
       - name: Build artifacts
         run: |
           # Actually do builds and make zips and whatnot
@@ -245,8 +224,6 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     runs-on: "ubuntu-22.04"
-    permissions:
-      contents: write
     outputs:
       val: ${{ steps.host.outputs.manifest }}
     steps:

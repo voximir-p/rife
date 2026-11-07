@@ -3,6 +3,7 @@ members = ["cargo:."]
 
 # Config for 'dist'
 [dist]
+github-build-setup = "../build-setup.yml"
 # The preferred dist version to use in CI (Cargo.toml SemVer syntax)
 cargo-dist-version = "0.34.0"
 # CI backends to support
@@ -11,5 +12,11 @@ ci = "github"
 installers = []
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["x86_64-pc-windows-msvc"]
+# Generate and dist a source tarball
 source-tarball = true
+# Extra static files to include in each App (path relative to this Cargo.toml's dir)
 include = ["CONTRIBUTING.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "THIRD-PARTY-LICENSES.html", "LICENSES/"]
+# Path that installers should place binaries in
+install-path = "CARGO_HOME"
+# Whether to install an updater program
+install-updater = false

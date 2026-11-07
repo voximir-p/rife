@@ -1,0 +1,2 @@
+- name: Fetch project dependencies
+  run: sh ./scripts/fetch-dependencies.sh
