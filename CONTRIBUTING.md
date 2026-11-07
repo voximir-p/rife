@@ -87,6 +87,12 @@ Repeat with each model directory being validated. Native inference coverage requ
 
 Rust owns the public API and processing pipeline. The C++ backend is statically linked. Native build configuration and source overlays are maintained in `crates/rife-core/build.rs` and `crates/rife-core/native/CMakeLists.txt`.
 
+## Documentation
+
+- `README.md` covers installation, usage, options, and limitations for end users, with a short pointer to this guide for contributors.
+- `CHANGELOG.md` describes user-visible changes. Keep CI setup, build-system changes, refactors, and test execution details out of release notes unless they have a user-visible effect; describe that effect rather than the implementation.
+- This guide covers developer prerequisites, architecture, contribution workflows, tests, and release maintenance. Keep commands and procedures reproducible for other contributors.
+
 ## Changing model support or native code
 
 Model files must remain user-provided. To add support for a model family, update the runtime graph validation, model fixtures, enabled native operators, and model compatibility documentation together. Validate both loading and inference using the native test and smoke workflow where applicable.

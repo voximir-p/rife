@@ -3,7 +3,6 @@
 Copyright (C) 2026 Voximir.
 
 The rife project code is licensed under the GNU General Public License version
-
 3 only; see [LICENSE](LICENSE). Releases provide corresponding source code
 as the separate `rife-source.tar.gz` download. Binary archives
 include this notice, native component license files, and the generated Rust
@@ -37,8 +36,7 @@ locked Rust crate sources, and build instructions in `BUILD-SOURCE.md`.
   `Cargo.lock` and included in `THIRD-PARTY-LICENSES.html`.
 - **Rust standard library** — compiler-supplied library notices are included
   in [RUST-STANDARD-LIBRARY.html](LICENSES/RUST-STANDARD-LIBRARY.html), separately
-  from the Cargo dependency report. Release builds verify these against the
-  compiler's installed notices.
+  from the Cargo dependency report.
 
 ## Separately downloaded runtime files
 

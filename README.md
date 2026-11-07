@@ -2,13 +2,11 @@
 
 **rife** is a command-line video interpolation tool built around RIFE NCNN/Vulkan. It can increase a video's frame rate, change its playback speed, and create slow motion while preserving the motion smoothness.
 
-The application is split into a reusable Rust library (`rife-core`) and the `rife` command-line program (`rife-cli`). Rust handles video processing and scheduling; a statically linked C++ backend runs the NCNN RIFE model on the CPU or Vulkan-capable GPUs.
-
 ## Features
 
 - Increase or reduce output frame rate with `--fps-scale`.
 - Change playback speed independently with `--speed`.
-- Retiming audio uses pitch-preserving FFmpeg filters; at normal speed, audio is copied by default.
+- Preserve audio pitch when changing playback speed; at normal speed, audio is copied by default.
 - Retime chapter boundaries and MKV subtitle cue timestamps and durations when playback speed changes.
 - Detect scene cuts to avoid interpolating across unrelated frames.
 - Select the CPU, one or more GPUs, or automatic device selection.
@@ -41,10 +39,6 @@ rife/
 3. Install a current graphics driver with Vulkan support for GPU inference. CPU inference can be selected with `-g -1`.
 
 The model directory name is selected with `-m`; rife checks the model files and graph when loading. A directory name alone does not guarantee compatibility. Do not download or run the upstream RIFE executable; this application contains its own inference backend.
-
-## License
-
-Licensed under **GPL-3.0-only**; see [LICENSE](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md). Each release provides a separate `rife-source.tar.gz` containing project and dependency sources.
 
 The application has been built and runtime-tested on **Windows x64 and Linux x64**. macOS support has not yet been verified. The layout above shows Windows filenames; on Linux, use `rife`, `ffmpeg/ffmpeg`, and `ffmpeg/ffprobe` without the `.exe` suffix, with the same adjacent `models/` directory.
 
@@ -102,11 +96,7 @@ Temporary processing files use the OS temporary directory. If rife cannot create
 
 The default model is `rife-v4.25`. Use `-m` to select another installed model. Model names are resolved directly as directory names under `models/`; for example, `-m rife-v4.28-large` looks for `models/rife-v4.28-large`.
 
-Models must use a compatible NCNN RIFE v4 three-input `flownet` graph. Legacy `contextnet`/`fusionnet` model families and arbitrary PyTorch weights are not supported. A directory name being accepted does not guarantee that its model graph is compatible; the application validates the graph at load time.
-
-## Contributing
-
-Build prerequisites, architecture notes, test commands, and dependency/license maintenance are in [CONTRIBUTING.md](CONTRIBUTING.md).
+Use compatible RIFE v4 models in NCNN format. Legacy RIFE models and arbitrary PyTorch weights are not supported.
 
 ## Current limitations
 
@@ -115,3 +105,11 @@ Build prerequisites, architecture notes, test commands, and dependency/license m
 - UHD, spatial TTA, and temporal TTA are not implemented for the supported RIFE v4 graphs.
 - Timing embedded inside subtitle content, such as ASS karaoke/animation effects and DVD subtitle display commands, is not rewritten when playback speed changes.
 - Container and encoder implementations impose their own frame-rate, time-base, and quality limits.
+
+## License
+
+Licensed under **GPL-3.0-only**; see [LICENSE](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md). Each release provides a separate `rife-source.tar.gz` containing project and dependency sources.
+
+## Contributing
+
+Developers and contributors: see [CONTRIBUTING.md](CONTRIBUTING.md) for build, test, and contribution instructions.
