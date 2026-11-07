@@ -2,7 +2,7 @@
 
 Copyright (C) 2026 Voximir.
 
-The Rife project code is licensed under the GNU General Public License version
+The rife project code is licensed under the GNU General Public License version
 3 only; see [LICENSE](LICENSE). Release archives include the corresponding
 source code, this notice, native component license files, and the generated
 Rust dependency license report.
@@ -34,7 +34,7 @@ Rust dependency license report.
 
 ## Separately downloaded runtime files
 
-Rife does not redistribute FFmpeg, FFprobe, or model weights. The user supplies
+rife does not redistribute FFmpeg, FFprobe, or model weights. The user supplies
 those files. Their licenses and any attribution requirements remain with their
 respective distributions; verify the terms for the exact FFmpeg build and model
 weights you download. FFmpeg's license can change when GPL-enabled components

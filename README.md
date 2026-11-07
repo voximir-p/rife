@@ -1,6 +1,6 @@
 # rife
 
-**Rife** is a command-line video interpolation tool built around RIFE NCNN/Vulkan. It can increase a video's frame rate, change its playback speed, and create slow motion while preserving the pitch of its audio.
+**rife** is a command-line video interpolation tool built around RIFE NCNN/Vulkan. It can increase a video's frame rate, change its playback speed, and create slow motion while preserving the pitch of its audio.
 
 The application is split into a reusable Rust library (`rife-core`) and the `rife` command-line program (`rife-cli`). Rust handles video processing and scheduling; a statically linked C++ backend runs the NCNN RIFE model on the CPU or Vulkan-capable GPUs.
 
@@ -19,7 +19,7 @@ The application is split into a reusable Rust library (`rife-core`) and the `rif
 
 ### Required runtime downloads
 
-The Rife release does **not** include FFmpeg, FFprobe, or model weights. Download
+The rife release does **not** include FFmpeg, FFprobe, or model weights. Download
 and install these files yourself next to `rife.exe` (the directory name is
 `rife/` below):
 
@@ -39,11 +39,11 @@ rife/
 2. Download a RIFE NCNN model from the [upstream models directory](https://github.com/Erlonealpha/rife-ncnn-vulkan-ex/tree/ex/models). For the model you want, copy `flownet.param` and `flownet.bin` into `models/<model-directory>/`, preserving the directory name. For example, the default model belongs in `models/rife-v4.25/`.
 3. Install a current graphics driver with Vulkan support for GPU inference. CPU inference can be selected with `-g -1`.
 
-The model directory name is selected with `-m`; Rife checks the model files and graph when loading. A directory name alone does not guarantee compatibility. Do not download or run the upstream RIFE executable; this application contains its own inference backend.
+The model directory name is selected with `-m`; rife checks the model files and graph when loading. A directory name alone does not guarantee compatibility. Do not download or run the upstream RIFE executable; this application contains its own inference backend.
 
 ## License
 
-Rife project code is licensed under **GPL-3.0-only**; see [LICENSE](LICENSE). Release archives include the corresponding source, third-party notices, and dependency license report. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for included components and attributions.
+rife project code is licensed under **GPL-3.0-only**; see [LICENSE](LICENSE). Release archives include the corresponding source, third-party notices, and dependency license report. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for included components and attributions.
 
 The currently compiled and runtime-tested platform is **Windows x64**. Linux and macOS support has not yet been verified; the layout above shows the Windows filenames.
 
@@ -89,8 +89,8 @@ rife -i input.mp4 -g -1,0 -j 1:2,2:2 output.mp4
 | `-g, --gpu GPU`                             | `auto` or comma-separated device IDs. Use `-1` for CPU; it can be combined with GPU IDs.                           |
 | `-j, --jobs LOAD:PROCESS[,PROCESS...]:SAVE` | Shared input/output buffering budgets and per-device worker counts. Default: `1:2:2`.                              |
 | `-t, --threshold THRESHOLD`                 | Scene-cut threshold from `0` to `1`. Default: `0.3`; `1` disables scene detection.                                 |
-| `-y, --overwrite`                           | Replace an existing output. Waits if another Rife process holds its output lock.                                   |
-| `--video-codec ENCODER`                     | Override the FFmpeg video encoder. If it does not support CRF, Rife uses a bitrate fallback.                       |
+| `-y, --overwrite`                           | Replace an existing output. Waits if another rife process holds its output lock.                                   |
+| `--video-codec ENCODER`                     | Override the FFmpeg video encoder. If it does not support CRF, rife uses a bitrate fallback.                       |
 | `--audio-codec ENCODER`                     | Override the audio encoder. At normal speed, audio is copied by default.                                           |
 | `-v, --verbose`                             | Show model, dimensions, frame rates, device names, and processing stages.                                          |
 

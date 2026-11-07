@@ -1,6 +1,6 @@
 # Contributing
 
-This guide covers building, checking, and extending Rife. For command-line usage and runtime setup, see the [README](README.md).
+This guide covers building, checking, and extending rife. For command-line usage and runtime setup, see the [README](README.md).
 
 ## Toolchain
 
