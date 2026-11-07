@@ -10,7 +10,7 @@ This guide covers building, checking, and extending rife. For command-line usage
 - On Windows, an MSVC C++ x64 toolchain
 - On Linux or macOS, the platform Vulkan development libraries and loader
 
-Windows x64 is the only platform currently built and runtime-tested. Other platform builds and runtime behavior remain unverified.
+Windows x64 and Linux x64 have been built and runtime-tested. macOS and other architectures remain unverified. Release targets are configured separately in [dist-workspace.toml](dist-workspace.toml).
 
 ## Build
 

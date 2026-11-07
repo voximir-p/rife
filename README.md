@@ -46,7 +46,7 @@ The model directory name is selected with `-m`; rife checks the model files and 
 
 Licensed under **GPL-3.0-only**; see [LICENSE](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md). Each release provides a separate `rife-source.tar.gz` containing project and dependency sources.
 
-The currently compiled and runtime-tested platform is **Windows x64**. Linux and macOS support has not yet been verified; the layout above shows the Windows filenames.
+The application has been built and runtime-tested on **Windows x64 and Linux x64**. macOS support has not yet been verified. The layout above shows Windows filenames; on Linux, use `rife`, `ffmpeg/ffmpeg`, and `ffmpeg/ffprobe` without the `.exe` suffix, with the same adjacent `models/` directory.
 
 ### Examples
 
@@ -110,8 +110,8 @@ Build prerequisites, architecture notes, test commands, and dependency/license m
 
 ## Current limitations
 
-- Only Windows x64 has been compiled and runtime-tested so far.
-- Multi-GPU hardware, Linux/macOS, broad 4K performance/stress cases, and HDR preservation are not verified; HDR is not preserved.
+- macOS and architectures other than x64 have not been verified.
+- Multi-GPU hardware and broad 4K performance/stress cases are not verified; HDR is not preserved.
 - UHD, spatial TTA, and temporal TTA are not implemented for the supported RIFE v4 graphs.
 - Timing embedded inside subtitle content, such as ASS karaoke/animation effects and DVD subtitle display commands, is not rewritten when playback speed changes.
 - Container and encoder implementations impose their own frame-rate, time-base, and quality limits.
