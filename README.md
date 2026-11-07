@@ -96,6 +96,8 @@ FPS scale and playback speed must be finite, positive numbers. When speed change
 
 Chapter boundaries and MKV subtitle cue timestamps and durations follow the same timing adjustment as audio. Chapter titles, subtitle styles, and MKV attachments are preserved. Changing only FPS leaves source subtitle and chapter timing unchanged. Subtitle streams are currently preserved only in MKV outputs.
 
+Temporary processing files use the OS temporary directory. If rife cannot create a temporary folder there, it uses the output's parent directory. The finished video is transferred to the output location after encoding succeeds, including when that location is on another drive.
+
 ## Models
 
 The default model is `rife-v4.25`. Use `-m` to select another installed model. Model names are resolved directly as directory names under `models/`; for example, `-m rife-v4.28-large` looks for `models/rife-v4.28-large`.

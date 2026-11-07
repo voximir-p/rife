@@ -19,7 +19,6 @@ use std::{
     sync::{Arc, Mutex},
     thread::{self, JoinHandle},
 };
-use tempfile::Builder;
 
 struct ProcessExit {
     status: ExitStatus,
@@ -427,10 +426,9 @@ pub(crate) fn process(args: Args, cancel: CancellationToken) -> Result<()> {
     for device in engine.selected_devices() {
         ui.info("Device", &device.name);
     }
-    let temp = Builder::new()
-        .prefix(&config::temp_prefix())
-        .tempdir_in(parent)
-        .context("unable to create temporary output staging directory")?;
+    // Declare staging before subprocesses so they are reaped before its files
+    // are removed, including on Windows and on early returns.
+    let temp = paths::staging_directory(&parent)?;
     let staged = dunce::simplified(temp.path()).join(format!("encoded.{extension}"));
     let chapter_metadata =
         if retiming && encode::supports_timed_metadata(&extension) && !info.chapters.is_empty() {
@@ -489,9 +487,6 @@ pub(crate) fn process(args: Args, cancel: CancellationToken) -> Result<()> {
         |done| progress.advance(done),
     );
     drop(sink); // EOF lets the encoder flush and finalize its container.
-    // Keep staging alive until both children have been reaped on every path.
-    // Otherwise Windows may refuse cleanup while FFmpeg still has it open.
-    let mut temp = Some(temp);
     let result = result.and_then(|stats| {
         progress.finalizing();
         decoder.finish()?;
@@ -501,7 +496,7 @@ pub(crate) fn process(args: Args, cancel: CancellationToken) -> Result<()> {
             staged.is_file() && fs::metadata(&staged)?.len() > 0,
             "FFmpeg did not produce a valid output"
         );
-        paths::commit_output(&staged, &output, &mut temp, args.overwrite)?;
+        paths::commit_output(&staged, &output, args.overwrite, &cancel)?;
         Ok(stats)
     });
     match result {

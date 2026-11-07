@@ -3,13 +3,29 @@
 
 use crate::{Args, Model, config};
 use anyhow::{Context, Result, bail, ensure};
+use rife_core::CancellationToken;
 use std::{
     env,
     ffi::OsStr,
     fs,
+    io::{ErrorKind, Read, Write},
     path::{Path, PathBuf},
 };
-use tempfile::TempDir;
+use tempfile::{Builder, TempDir, TempPath};
+
+pub(crate) fn staging_directory(output_parent: &Path) -> Result<TempDir> {
+    staging_directory_in(&env::temp_dir(), output_parent)
+}
+
+fn staging_directory_in(preferred: &Path, output_parent: &Path) -> Result<TempDir> {
+    let prefix = config::temp_prefix();
+    Builder::new()
+        .prefix(&prefix)
+        .tempdir_in(preferred)
+        .or_else(|_| Builder::new().prefix(&prefix).tempdir_in(output_parent))
+        .context("unable to create temporary output staging directory")
+}
+
 pub(crate) fn tool_path(root: &Path, tool: &str) -> Result<PathBuf> {
     let filename = format!("{tool}{}", env::consts::EXE_SUFFIX);
     let path = root.join(config::FFMPEG_DIRECTORY).join(filename);
@@ -78,11 +94,29 @@ pub(crate) fn validate_output(input: &Path, output: &Path, overwrite: bool) -> R
 pub(crate) fn commit_output(
     staged: &Path,
     output: &Path,
-    temp: &mut Option<TempDir>,
     overwrite: bool,
+    cancel: &CancellationToken,
 ) -> Result<()> {
+    cancel.check()?;
+    ensure!(
+        !output.exists() || overwrite,
+        "output was created during processing; refusing to overwrite it"
+    );
+    let parent = output.parent().context("output has no parent directory")?;
+    // Prepare the complete file on the destination filesystem before changing
+    // an existing output. Cross-drive copies must never expose partial video.
+    let ready = output_tempfile(parent)?;
+    match fs::rename(staged, &ready) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::CrossesDevices => {
+            copy_output(staged, &ready, cancel)
+                .context("could not copy finished video to output directory")?;
+        }
+        Err(error) => return Err(error).context("could not stage finished video for output"),
+    }
+    cancel.check()?;
     if !output.exists() {
-        fs::rename(staged, output).context("could not move finished video into place")?;
+        fs::rename(&ready, output).context("could not move finished video into place")?;
         return Ok(());
     }
     ensure!(
@@ -91,18 +125,15 @@ pub(crate) fn commit_output(
     );
 
     // Backup lives on the same filesystem. A failed final move can be rolled back.
-    let backup = temp
-        .as_ref()
-        .context("temporary directory was removed prematurely")?
-        .path()
-        .join("previous_output.backup");
+    let mut backup = output_tempfile(parent)?;
     fs::rename(output, &backup).context("could not back up existing output")?;
-    match fs::rename(staged, output) {
+    match fs::rename(&ready, output) {
         Ok(()) => Ok(()),
         Err(err) => {
             if let Err(restore) = fs::rename(&backup, output) {
                 // Preserve the user's previous output if rollback fails: don't delete its backup.
-                let saved = temp.take().expect("temp directory exists").keep();
+                backup.disable_cleanup(true);
+                let saved = backup.to_path_buf();
                 bail!(
                     "failed to commit new output: {err}; also failed to restore the previous output: {restore}. backup kept in {}",
                     saved.display()
@@ -113,12 +144,104 @@ pub(crate) fn commit_output(
     }
 }
 
+fn copy_output(source: &Path, destination: &Path, cancel: &CancellationToken) -> Result<()> {
+    let mut source = fs::File::open(source)?;
+    let mut destination = fs::File::create(destination)?;
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        cancel.check()?;
+        let count = source.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        destination.write_all(&buffer[..count])?;
+    }
+    destination.set_permissions(source.metadata()?.permissions())?;
+    Ok(())
+}
+
+fn output_tempfile(parent: &Path) -> Result<TempPath> {
+    Ok(Builder::new()
+        .prefix(&config::temp_prefix())
+        .tempfile_in(parent)
+        .context("could not create temporary file in output directory")?
+        .into_temp_path())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::Parser;
     fn temp() -> TempDir {
         tempfile::tempdir_in(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target")).unwrap()
+    }
+
+    fn commit_output(staged: &Path, output: &Path, overwrite: bool) -> Result<()> {
+        super::commit_output(staged, output, overwrite, &CancellationToken::default())
+    }
+
+    #[test]
+    fn cancelled_commit_preserves_existing_output() {
+        let root = temp();
+        let output = root.path().join("output.mp4");
+        let staged = root.path().join("encoded.mp4");
+        fs::write(&output, "old").unwrap();
+        fs::write(&staged, "new").unwrap();
+        let cancel = CancellationToken::default();
+        cancel.cancel();
+        assert!(super::commit_output(&staged, &output, true, &cancel).is_err());
+        assert_eq!(fs::read_to_string(output).unwrap(), "old");
+        assert_eq!(fs::read_to_string(staged).unwrap(), "new");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn staging_prefers_system_temp_and_falls_back_when_unavailable() {
+        let output_parent = temp();
+        let preferred = temp();
+        let staging = staging_directory_in(preferred.path(), output_parent.path()).unwrap();
+        assert_eq!(staging.path().parent(), Some(preferred.path()));
+        for unavailable in [preferred.path().join("missing"), {
+            let file = preferred.path().join("file");
+            fs::write(&file, "not a directory").unwrap();
+            file
+        }] {
+            let fallback = staging_directory_in(&unavailable, output_parent.path()).unwrap();
+            assert_eq!(fallback.path().parent(), Some(output_parent.path()));
+        }
+        let system = staging_directory(output_parent.path()).unwrap();
+        assert_eq!(
+            dunce::canonicalize(system.path().parent().unwrap()).unwrap(),
+            dunce::canonicalize(env::temp_dir()).unwrap()
+        );
+    }
+
+    #[test]
+    fn system_temp_output_commits_for_new_and_existing_files() {
+        let root = temp();
+        let output = root.path().join("output.mp4");
+        for overwrite in [false, true] {
+            let staging = staging_directory(root.path()).unwrap();
+            let staging_path = staging.path().to_path_buf();
+            let staged = staging.path().join("encoded.mp4");
+            let expected = vec![if overwrite { 42 } else { 21 }; 200_000];
+            fs::write(&staged, &expected).unwrap();
+            commit_output(&staged, &output, overwrite).unwrap();
+            drop(staging);
+            assert!(!staging_path.exists());
+            assert_eq!(fs::read(&output).unwrap(), expected);
+            assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+        }
+    }
+
+    #[test]
+    fn preparation_failure_leaves_old_output_and_no_temporary_files() {
+        let root = temp();
+        let output = root.path().join("output.mp4");
+        fs::write(&output, "old").unwrap();
+        assert!(commit_output(&root.path().join("missing.mp4"), &output, true).is_err());
+        assert_eq!(fs::read_to_string(output).unwrap(), "old");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
     }
     #[test]
     fn finds_only_ffmpeg_tools_and_models_in_the_new_layout() {
@@ -184,9 +307,8 @@ mod tests {
         let staging = tempfile::tempdir_in(root.path()).unwrap();
         let staged = staging.path().join("encoded.mp4");
         fs::write(&staged, "new").unwrap();
-        let mut staging = Some(staging);
-        assert!(commit_output(&staged, &output, &mut staging, false).is_err());
-        commit_output(&staged, &output, &mut staging, true).unwrap();
+        assert!(commit_output(&staged, &output, false).is_err());
+        commit_output(&staged, &output, true).unwrap();
         drop(staging);
         assert_eq!(fs::read_to_string(output).unwrap(), "new");
         assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
