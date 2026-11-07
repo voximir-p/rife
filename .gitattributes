@@ -1,3 +1,4 @@
 *.sh text eol=lf
 * text=auto eol=lf
 third_party/dependencies.lock text eol=lf
+THIRD-PARTY-LICENSES.html linguist-detectable=false
