@@ -18,6 +18,17 @@ Windows x64 and Linux x64 have been built and runtime-tested. macOS and other ar
 
 The native build uses pinned NCNN and Vulkan-Headers revisions from `third_party/dependencies.lock`. Fetch those sources before building; `build.rs` does not download them.
 
+On Debian/Ubuntu, install the Vulkan loader development package before building:
+
+```sh
+sudo apt-get update
+sudo apt-get install -y libvulkan-dev
+```
+
+The fetched Vulkan headers do not supply the system loader library. Linux
+release builds install this package through `dist.dependencies.apt` in
+`dist-workspace.toml`.
+
 Run the same scripts on Unix-like systems and in Git Bash on Windows:
 
 ```sh

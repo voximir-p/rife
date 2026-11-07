@@ -23,6 +23,10 @@ install-path = "CARGO_HOME"
 # Whether to install an updater program
 install-updater = false
 
+[dist.dependencies.apt]
+# NCNN's FindVulkan check and the final link need the loader development files.
+libvulkan-dev = { targets = ["x86_64-unknown-linux-gnu"] }
+
 [[dist.extra-artifacts]]
 artifacts = ["target/rife-source.tar.gz"]
 build = ["sh", "scripts/package-source.sh"]
