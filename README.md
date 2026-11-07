@@ -1,6 +1,6 @@
 # rife
 
-**rife** is a command-line video interpolation tool built around RIFE NCNN/Vulkan. It can increase a video's frame rate, change its playback speed, and create slow motion while preserving the pitch of its audio.
+**rife** is a command-line video interpolation tool built around RIFE NCNN/Vulkan. It can increase a video's frame rate, change its playback speed, and create slow motion while preserving the motion smoothness.
 
 The application is split into a reusable Rust library (`rife-core`) and the `rife` command-line program (`rife-cli`). Rust handles video processing and scheduling; a statically linked C++ backend runs the NCNN RIFE model on the CPU or Vulkan-capable GPUs.
 
@@ -53,20 +53,17 @@ The currently compiled and runtime-tested platform is **Windows x64**. Linux and
 # Double the frame rate without changing playback speed
 rife -i input.mp4 -f 2 output.mp4
 
-# Quadruple the frame rate
-rife -i input.mp4 -f 4 output.mp4
-
 # Create half-speed video while keeping the original frame rate
 rife -i input.mp4 -s 0.5 slow.mp4
 
 # Create half-speed video at 1.5 times the original frame rate
 rife -i input.mp4 -f 1.5 -s 0.5 slow.mp4
 
-# Choose a model and scene-cut threshold
-rife -i input.mp4 -m rife-v4.26-large -t 0.4 -v output.mkv
+# Choose a model and scene-cut threshold and double the frame rate
+rife -i input.mp4 -m rife-v4.26-large -t 0.4 -f 2 -v output.mkv
 
-# Use the CPU and GPU 0, with two workers on each device
-rife -i input.mp4 -g -1,0 -j 1:2,2:2 output.mp4
+# Use the CPU and GPU 0, with two workers on each device to double the frame rate
+rife -i input.mp4 -g -1,0 -j 1:2,2:2 -f 2 output.mp4
 ```
 
 `--fps-scale` and `--speed` are independent:
