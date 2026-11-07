@@ -116,12 +116,15 @@ The Rust standard-library notices are separate from Cargo crates. Install
 update; `--check` verifies the checked-in copy against the release compiler.
 Release CI checks both reports before building the executable.
 
-From a clean, committed checkout, run `sh scripts/package-source.sh` to
+With all tracked source changes committed, run `sh scripts/package-source.sh` to
 create `target/rife-source.tar.gz`. The release workflow publishes this bundle
 alongside the binary. It includes pinned native sources, locked Rust crates,
 their notices, and build scripts. Its generated Cargo configuration supports
 `cargo build --release --locked --offline` after installing the documented
 toolchains. Dependency downloads require network access when packaging;
 FFmpeg, model weights, Git history, and machine-local files are excluded.
+Untracked files, including cargo-dist's generated manifests, are excluded from
+the source archive and do not block packaging. Staged or unstaged changes to
+tracked files still fail the check, with the affected paths listed in the error.
 
 FFmpeg binaries and RIFE model weights are supplied separately by users. Do not add them to source or release artifacts. See the README and third-party notices for runtime and redistribution information.

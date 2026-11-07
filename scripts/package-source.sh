@@ -9,7 +9,7 @@ else
     python=python
 fi
 exec "$python" - "$root" "$@" <<'PYTHON'
-"""Build the release Corresponding Source bundle from a clean checkout."""
+"""Build the release Corresponding Source bundle from committed sources."""
 
 import argparse
 import sys
@@ -37,8 +37,14 @@ def main():
     parser = argparse.ArgumentParser(prog="package-source.sh", description=__doc__)
     parser.add_argument("--output", type=Path, default=ROOT / "target/rife-source.tar.gz")
     args = parser.parse_args()
-    if run("git", "status", "--porcelain", "--untracked-files=normal").strip():
-        parser.error("commit release changes before packaging their corresponding source")
+    # cargo-dist's stdout redirection creates an untracked dist-manifest.json
+    # before this script starts. git archive excludes untracked files; require
+    # tracked sources to match HEAD without rejecting generated build outputs.
+    changes = run("git", "status", "--porcelain", "--untracked-files=no").decode(
+        errors="replace"
+    ).rstrip()
+    if changes:
+        parser.error("commit or restore tracked release changes before packaging:\n" + changes)
     # Fetch only the revisions in the lock manifest. Never ship machine-local
     # runtime files, model weights, build products, Git history, or credentials.
     run("sh", str(ROOT / "scripts/fetch-dependencies.sh"))
