@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-07
+
 ### Changed
 
 - Document Windows x64 and Linux x64 as built and runtime-tested platforms.
@@ -32,5 +34,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Windows x64 is the only compiled and runtime-tested release target.
 - FFmpeg, FFprobe, and model files are downloaded and installed by the user; they are not included in the release archive.
 
-[unreleased]: https://github.com/voximir-p/rife/compare/v0.1.0...HEAD
+[unreleased]: https://github.com/voximir-p/rife/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/voximir-p/rife/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/voximir-p/rife/releases/tag/v0.1.0
