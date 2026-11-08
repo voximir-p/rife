@@ -32,7 +32,7 @@ locked Rust crate sources, and build instructions in `BUILD-SOURCE.md`.
   the source license is included at
   [VULKAN-HEADERS-LICENSE.txt](LICENSES/native/VULKAN-HEADERS-LICENSE.txt).
 - **Rust crates** — third-party Rust crate notices and license texts for the
-  Windows x64 dependency graph are generated with `cargo-about` from
+  Windows x64 and Linux x64 dependency graphs are generated with `cargo-about` from
   `Cargo.lock` and included in `THIRD-PARTY-LICENSES.html`.
 - **Rust standard library** — compiler-supplied library notices are included
   in [RUST-STANDARD-LIBRARY.html](LICENSES/RUST-STANDARD-LIBRARY.html), separately
