@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 //! CLI identity comes from Cargo; runtime layout and shared process settings live here.
+use clap::builder::styling::{AnsiColor, Style};
 use std::time::Duration;
+
+pub(crate) const SUCCESS_STYLE: Style = AnsiColor::BrightGreen.on_default().bold();
+pub(crate) const ACTIVE_STYLE: Style = AnsiColor::BrightCyan.on_default().bold();
 
 pub(crate) const APP_NAME: &str = env!("CARGO_BIN_NAME");
 pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");

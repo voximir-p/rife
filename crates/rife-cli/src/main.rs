@@ -3,7 +3,7 @@
 
 use clap::{
     CommandFactory, Parser,
-    builder::styling::{AnsiColor, Color, Style, Styles as ClapStyles},
+    builder::styling::{AnsiColor, Styles as ClapStyles},
 };
 use config::{APP_NAME, VERSION};
 use rife_core::{
@@ -27,15 +27,12 @@ mod process;
 mod ui;
 
 pub(crate) fn make_styles() -> ClapStyles {
-    let green = Style::new().fg_color(Some(Color::Ansi(AnsiColor::Green)));
-    let cyan = Style::new().fg_color(Some(Color::Ansi(AnsiColor::Cyan)));
-    let red = Style::new().fg_color(Some(Color::Ansi(AnsiColor::Red)));
     ClapStyles::styled()
-        .header(green.bold())
-        .usage(green.bold())
-        .literal(cyan.bold())
-        .placeholder(cyan)
-        .error(red.bold())
+        .header(config::SUCCESS_STYLE)
+        .usage(config::SUCCESS_STYLE)
+        .literal(config::ACTIVE_STYLE)
+        .placeholder(config::ACTIVE_STYLE)
+        .error(AnsiColor::Red.on_default().bold())
 }
 
 #[derive(Debug, Parser)]
@@ -63,7 +60,7 @@ struct Args {
     #[arg(short = 's', long, default_value_t = PlaybackOptions::default().speed, value_name = "FACTOR", value_parser = parse_factor)]
     speed: f64,
 
-    /// Non-negative CRF override; default uses source metadata or 20
+    /// Finite, non-negative CRF override; default uses source metadata or 20
     #[arg(short = 'c', long, value_name = "CRF", value_parser = encode::parse_crf)]
     crf: Option<String>,
 
@@ -396,9 +393,9 @@ mod tests {
             let text = help.ansi().to_string();
             assert!(!text.contains("Examples:"));
             assert!(text.contains("--verbose"));
-            assert!(text.contains("\x1b[1m\x1b[32m"), "{text:?}");
-            assert!(text.contains("\x1b[1m\x1b[36m"), "{text:?}");
-            assert!(text.contains("\x1b[36m<FILE>"), "{text:?}");
+            assert!(text.contains("\x1b[1m\x1b[92m"), "{text:?}");
+            assert!(text.contains("\x1b[1m\x1b[96m"), "{text:?}");
+            assert!(text.contains("\x1b[1m\x1b[96m<FILE>"), "{text:?}");
         }
         let error = Args::try_parse_from([APP_NAME, "--invalid-flag"]).unwrap_err();
         let text = error.render().ansi().to_string();
@@ -456,8 +453,15 @@ mod tests {
                     .unwrap();
             assert_eq!(args.crf.as_deref(), Some(value));
         }
-        for value in ["-1", "-0.5", "NaN", ""] {
+        for value in [
+            "-1", "-0.5", "NaN", "inf", "+inf", "-inf", "Infinity", "1e309", "",
+        ] {
             assert!(encode::parse_crf(value).is_err(), "accepted {value}");
+            assert!(
+                Args::try_parse_from([APP_NAME, "-i", "source.mp4", "--crf", value, "out.mp4"])
+                    .is_err(),
+                "CLI accepted {value}"
+            );
         }
     }
 }

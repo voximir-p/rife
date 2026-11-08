@@ -1,7 +1,8 @@
 // Copyright (C) 2026 Voximir.
 // SPDX-License-Identifier: GPL-3.0-only
 
-use clap::builder::styling::AnsiColor;
+use crate::config::{ACTIVE_STYLE, SUCCESS_STYLE};
+use clap::builder::styling::Style;
 use console::{Term, measure_text_width, style, truncate_str};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
 use std::{
@@ -153,16 +154,15 @@ impl Palette {
     }
 
     fn label(self, value: impl fmt::Display) -> String {
-        self.paint(padded(value), AnsiColor::BrightGreen)
+        self.paint(padded(value), SUCCESS_STYLE)
     }
 
     fn value(self, value: impl fmt::Display) -> String {
-        self.paint(value, AnsiColor::BrightCyan)
+        self.paint(value, ACTIVE_STYLE)
     }
 
-    fn paint(self, value: impl fmt::Display, color: AnsiColor) -> String {
+    fn paint(self, value: impl fmt::Display, style: Style) -> String {
         if self.enabled {
-            let style = color.on_default().bold();
             format!("{style}{value}{style:#}")
         } else {
             value.to_string()
