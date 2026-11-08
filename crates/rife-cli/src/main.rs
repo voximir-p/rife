@@ -153,7 +153,6 @@ fn main() {
     let ui = ui::Ui::new(args.verbose, interrupted.clone());
     let result = process::process(args, token, &ui);
     if interrupted.load(Ordering::Relaxed) {
-        ui.finish_interrupted();
         std::process::exit(130);
     }
     if let Err(error) = result {

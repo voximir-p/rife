@@ -18,37 +18,37 @@ const PROGRESS_LABEL: &str = "Processing";
 const MAX_BAR_WIDTH: usize = 32;
 const MIN_BAR_WIDTH: usize = 8;
 
-#[derive(Debug, Default)]
-struct OutputState {
-    interrupted: Arc<AtomicBool>,
-    ended: AtomicBool,
+fn write_line(term: &dyn indicatif::TermLike, line: &str) {
+    let _ = term.write_line(line.trim_end());
+    let _ = term.flush();
 }
 
-impl OutputState {
-    fn write_line(&self, term: &dyn indicatif::TermLike, line: &str) {
-        let interrupted = self.interrupted.load(Ordering::Relaxed);
-        if term.write_line(line.trim_end()).is_ok() && interrupted {
-            self.ended.store(true, Ordering::Relaxed);
-        }
-        let _ = term.flush();
-    }
-
-    fn finish_interrupted(&self, term: &dyn indicatif::TermLike, interactive: bool) {
-        if interactive
-            && self.interrupted.load(Ordering::Relaxed)
-            && !self.ended.load(Ordering::Relaxed)
-        {
-            self.write_line(term, "");
-        }
-    }
+fn clear_row(term: &dyn indicatif::TermLike) {
+    let _ = term.clear_line();
+    let _ = term.write_str("\r");
+    let _ = term.flush();
 }
 
 // Indicatif emits a separate space-only write to pad every redraw to the right
-// edge. Suppress it so Ctrl+C echo cannot wrap the row before we clear it.
+// edge. Suppress it, and stop drawing on interruption so the terminal's own
+// cancellation echo and cursor position survive cleanup.
 #[derive(Debug)]
-struct UnpaddedTerm(Arc<dyn indicatif::TermLike>);
+struct LiveTerm(Arc<dyn indicatif::TermLike>, Arc<AtomicBool>);
 
-impl indicatif::TermLike for UnpaddedTerm {
+impl LiveTerm {
+    fn draw(
+        &self,
+        action: impl FnOnce(&dyn indicatif::TermLike) -> io::Result<()>,
+    ) -> io::Result<()> {
+        if self.1.load(Ordering::Relaxed) {
+            Ok(())
+        } else {
+            action(self.0.as_ref())
+        }
+    }
+}
+
+impl indicatif::TermLike for LiveTerm {
     fn width(&self) -> u16 {
         self.0.width()
     }
@@ -56,41 +56,75 @@ impl indicatif::TermLike for UnpaddedTerm {
         self.0.height()
     }
     fn move_cursor_up(&self, n: usize) -> io::Result<()> {
-        self.0.move_cursor_up(n)
+        self.draw(|term| term.move_cursor_up(n))
     }
     fn move_cursor_down(&self, n: usize) -> io::Result<()> {
-        self.0.move_cursor_down(n)
+        self.draw(|term| term.move_cursor_down(n))
     }
     fn move_cursor_right(&self, n: usize) -> io::Result<()> {
-        self.0.move_cursor_right(n)
+        self.draw(|term| term.move_cursor_right(n))
     }
     fn move_cursor_left(&self, n: usize) -> io::Result<()> {
-        self.0.move_cursor_left(n)
+        self.draw(|term| term.move_cursor_left(n))
     }
     fn write_line(&self, line: &str) -> io::Result<()> {
-        self.0.write_line(line)
+        self.draw(|term| term.write_line(line))
     }
     fn write_str(&self, text: &str) -> io::Result<()> {
         if text.bytes().all(|byte| byte == b' ') {
             Ok(())
         } else {
-            self.0.write_str(text)
+            self.draw(|term| term.write_str(text))
         }
     }
     fn clear_line(&self) -> io::Result<()> {
-        self.0.clear_line()
+        self.draw(|term| term.clear_line())
     }
     fn flush(&self) -> io::Result<()> {
-        self.0.flush()
+        // Live drawing is an overlay on the next empty row, not a committed
+        // line. Leave the cursor where the last completed line positioned it.
+        self.draw(|term| {
+            term.write_str("\r")?;
+            term.flush()
+        })
     }
 }
 
-fn draw_target(term: &Term) -> ProgressDrawTarget {
-    if term.is_term() && !console::is_dumb() {
-        ProgressDrawTarget::term_like_with_hz(Box::new(UnpaddedTerm(Arc::new(term.clone()))), 10)
+fn draw_target(term: &Term, interrupted: Arc<AtomicBool>) -> ProgressDrawTarget {
+    if term.is_term() && !console::is_dumb() && enable_live_rows(term) {
+        ProgressDrawTarget::term_like_with_hz(
+            Box::new(LiveTerm(Arc::new(term.clone()), interrupted)),
+            10,
+        )
     } else {
         ProgressDrawTarget::hidden()
     }
+}
+
+// Erasing the tail while preserving native cancellation echo requires VT
+// output on Windows too, including when NO_COLOR disables colored labels.
+#[cfg(windows)]
+fn enable_live_rows(term: &Term) -> bool {
+    if term.features().is_msys_tty() {
+        return true;
+    }
+    use windows_sys::Win32::System::Console::{
+        ENABLE_VIRTUAL_TERMINAL_PROCESSING, GetConsoleMode, GetStdHandle, STD_ERROR_HANDLE,
+        SetConsoleMode,
+    };
+    let mut mode = 0;
+    // SAFETY: the standard handle is borrowed, and mode points to a valid
+    // writable DWORD. Only the console output mode is changed.
+    unsafe {
+        let handle = GetStdHandle(STD_ERROR_HANDLE);
+        GetConsoleMode(handle, &mut mode) != 0
+            && SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING) != 0
+    }
+}
+
+#[cfg(not(windows))]
+fn enable_live_rows(_: &Term) -> bool {
+    true
 }
 
 #[derive(Clone, Copy)]
@@ -150,7 +184,7 @@ pub(crate) struct Ui {
     verbose: bool,
     palette: Palette,
     term: Term,
-    output: Arc<OutputState>,
+    interrupted: Arc<AtomicBool>,
 }
 
 impl Ui {
@@ -159,10 +193,7 @@ impl Ui {
             verbose,
             palette: Palette::stderr(),
             term: Term::stderr(),
-            output: Arc::new(OutputState {
-                interrupted,
-                ended: AtomicBool::new(false),
-            }),
+            interrupted,
         }
     }
 
@@ -172,16 +203,8 @@ impl Ui {
         }
     }
 
-    pub(crate) fn finish_interrupted(&self) {
-        // Static status rows already end in a newline, but a terminal may have
-        // echoed ^C on the following row. Live rows finalized after the signal
-        // already supply their own newline and must not gain a second one.
-        self.output
-            .finish_interrupted(&self.term, self.term.is_term());
-    }
-
     pub(crate) fn status(&self, label: &str, value: impl fmt::Display) {
-        self.output.write_line(
+        write_line(
             &self.term,
             &format!("{} {value}", self.palette.label(label)),
         );
@@ -189,15 +212,9 @@ impl Ui {
 
     pub(crate) fn loading(&self, detail: &str) -> Loading {
         let label = "Loading";
-        let bar = ProgressBar::with_draw_target(None, draw_target(&self.term));
-        if bar.is_hidden() {
-            if self.verbose {
-                self.output.write_line(
-                    &self.term,
-                    &format!("{} {detail}", self.palette.value(padded(label))),
-                );
-            }
-        } else {
+        let bar =
+            ProgressBar::with_draw_target(None, draw_target(&self.term, self.interrupted.clone()));
+        if !bar.is_hidden() {
             let (label, detail, term, palette) = (
                 label.to_owned(),
                 detail.to_owned(),
@@ -222,33 +239,28 @@ impl Ui {
         }
         Loading {
             bar,
-            line: format!("{} {detail}", self.palette.value(padded(label))),
             loaded_line: format!("{} {detail}", self.palette.label("Loaded")),
             show_when_hidden: self.verbose,
             finished: false,
             term: Arc::new(self.term.clone()),
-            output: self.output.clone(),
+            interrupted: self.interrupted.clone(),
         }
     }
 
     pub(crate) fn progress(&self, total: Option<u64>) -> Progress {
-        let bar = ProgressBar::with_draw_target(total, draw_target(&self.term));
+        let bar =
+            ProgressBar::with_draw_target(total, draw_target(&self.term, self.interrupted.clone()));
         let progress = Progress {
             bar,
             term: Arc::new(self.term.clone()),
-            output: self.output.clone(),
+            interrupted: self.interrupted.clone(),
             palette: self.palette,
             stage: Stage::Processing,
             encoded: Arc::new(AtomicU64::new(0)),
             finished: false,
         };
         progress.bar.set_style(progress.style());
-        if progress.bar.is_hidden() {
-            self.output.write_line(
-                &self.term,
-                &format!("{} video", self.palette.value(padded(PROGRESS_LABEL))),
-            );
-        } else {
+        if !progress.bar.is_hidden() {
             progress.bar.enable_steady_tick(REFRESH_INTERVAL);
             progress.bar.tick();
         }
@@ -258,12 +270,11 @@ impl Ui {
 
 pub(crate) struct Loading {
     bar: ProgressBar,
-    line: String,
     loaded_line: String,
     show_when_hidden: bool,
     finished: bool,
     term: Arc<dyn indicatif::TermLike>,
-    output: Arc<OutputState>,
+    interrupted: Arc<AtomicBool>,
 }
 
 impl Loading {
@@ -271,16 +282,15 @@ impl Loading {
         if self.finished {
             return;
         }
+        if self.interrupted.load(Ordering::Relaxed) {
+            clear_live_line(&self.bar, self.term.as_ref(), &self.interrupted);
+            self.finished = true;
+            return;
+        }
         if !self.bar.is_hidden() || self.show_when_hidden {
-            persist_line(
-                &self.bar,
-                self.term.as_ref(),
-                &self.output,
-                &self.loaded_line,
-            );
+            persist_line(&self.bar, self.term.as_ref(), &self.loaded_line);
         } else {
-            self.bar.disable_steady_tick();
-            self.bar.finish_and_clear();
+            clear_bar(&self.bar);
         }
         self.finished = true;
     }
@@ -288,14 +298,8 @@ impl Loading {
 
 impl Drop for Loading {
     fn drop(&mut self) {
-        if self.finished {
-            return;
-        }
-        if !self.bar.is_hidden() {
-            persist_line(&self.bar, self.term.as_ref(), &self.output, &self.line);
-        } else {
-            self.bar.disable_steady_tick();
-            self.bar.finish_and_clear();
+        if !self.finished {
+            clear_live_line(&self.bar, self.term.as_ref(), &self.interrupted);
         }
     }
 }
@@ -306,7 +310,7 @@ pub(crate) struct Progress {
     palette: Palette,
     stage: Stage,
     encoded: Arc<AtomicU64>,
-    output: Arc<OutputState>,
+    interrupted: Arc<AtomicBool>,
     finished: bool,
 }
 
@@ -349,16 +353,23 @@ impl Progress {
     }
 
     pub(crate) fn saving(&mut self, frames: u64) {
+        if self.interrupted.load(Ordering::Relaxed) {
+            self.abandon();
+            return;
+        }
         let hidden = self.bar.is_hidden();
         let message = processed(frames, self.bar.elapsed(), self.palette);
-        persist_line(&self.bar, self.term.as_ref(), &self.output, &message);
+        persist_line(&self.bar, self.term.as_ref(), &message);
         self.stage = Stage::Saving;
         self.bar = ProgressBar::with_draw_target(
             Some(frames),
             if hidden {
                 ProgressDrawTarget::hidden()
             } else {
-                ProgressDrawTarget::term_like_with_hz(Box::new(UnpaddedTerm(self.term.clone())), 10)
+                ProgressDrawTarget::term_like_with_hz(
+                    Box::new(LiveTerm(self.term.clone(), self.interrupted.clone())),
+                    10,
+                )
             },
         );
         self.bar.set_style(self.style());
@@ -373,40 +384,27 @@ impl Progress {
     }
 
     pub(crate) fn finish(&mut self) {
+        if self.finished {
+            return;
+        }
+        if self.interrupted.load(Ordering::Relaxed) {
+            self.abandon();
+            return;
+        }
         let message = saved(
             self.bar.length().unwrap_or(self.bar.position()),
             self.bar.elapsed(),
             self.palette,
         );
-        persist_line(&self.bar, self.term.as_ref(), &self.output, &message);
+        persist_line(&self.bar, self.term.as_ref(), &message);
         self.finished = true;
     }
 
     pub(crate) fn abandon(&mut self) {
-        if self.finished {
-            return;
+        if !self.finished {
+            clear_live_line(&self.bar, self.term.as_ref(), &self.interrupted);
+            self.finished = true;
         }
-        let width = if self.bar.is_hidden() {
-            usize::MAX
-        } else {
-            usize::from(self.term.width()).saturating_sub(3)
-        };
-        let line = render_status(
-            if matches!(self.stage, Stage::Saving) {
-                self.encoded
-                    .load(Ordering::Relaxed)
-                    .min(self.bar.length().unwrap_or(u64::MAX))
-            } else {
-                self.bar.position()
-            },
-            self.bar.length(),
-            self.bar.elapsed(),
-            width,
-            self.palette,
-            self.stage,
-        );
-        persist_line(&self.bar, self.term.as_ref(), &self.output, &line);
-        self.finished = true;
     }
 }
 
@@ -416,21 +414,34 @@ impl Drop for Progress {
     }
 }
 
-fn persist_line(
-    bar: &ProgressBar,
-    term: &dyn indicatif::TermLike,
-    output: &OutputState,
-    line: &str,
-) {
+fn clear_bar(bar: &ProgressBar) {
+    bar.disable_steady_tick();
+    bar.finish_and_clear();
+}
+
+fn clear_live_line(bar: &ProgressBar, term: &dyn indicatif::TermLike, interrupted: &AtomicBool) {
+    clear_bar(bar);
+    if !bar.is_hidden() {
+        if interrupted.load(Ordering::Relaxed) {
+            // The cursor was at column one before the terminal echoed the
+            // interrupt. Erase only the remaining live text, leaving that echo
+            // and its cursor position alone. Do not synthesize a newline or ^C.
+            let _ = term.write_str("\x1b[K");
+            let _ = term.flush();
+        } else {
+            clear_row(term);
+        }
+    }
+}
+
+fn persist_line(bar: &ProgressBar, term: &dyn indicatif::TermLike, line: &str) {
     let width = if bar.is_hidden() {
         usize::MAX
     } else {
         usize::from(term.width()).saturating_sub(3)
     };
-    // Stop redraws before clearing and committing exactly one newline-terminated row.
-    bar.disable_steady_tick();
-    bar.finish_and_clear();
-    output.write_line(term, &truncate_str(line, width, ""));
+    clear_bar(bar);
+    write_line(term, &truncate_str(line, width, ""));
 }
 
 fn elapsed_time(elapsed: Duration) -> String {
@@ -646,30 +657,58 @@ mod tests {
         }
     }
 
-    #[test]
-    fn interrupted_output_ends_once_without_trailing_spaces() {
-        let recorder = RecordingTerm::default();
-        let output = OutputState::default();
-        output.write_line(&recorder, "Scanning video frames   ");
-        output.interrupted.store(true, Ordering::Relaxed);
-        output.finish_interrupted(&recorder, true);
-        output.finish_interrupted(&recorder, true);
-        assert_eq!(
-            *recorder.0.lock().unwrap(),
-            ["Scanning video frames\n", "\n"]
+    fn assert_no_persisted_live_rows(recorder: &RecordingTerm) {
+        let events = recorder.0.lock().unwrap();
+        assert!(
+            !events.iter().any(|event| event.ends_with('\n')
+                && (event.contains("Loading")
+                    || event.contains("Processing")
+                    || event.contains("Saving"))),
+            "{events:?}"
         );
+        assert!(
+            events
+                .iter()
+                .any(|event| event == "<clear>" || event == "\x1b[K")
+        );
+        assert!(matches!(
+            events.last().map(String::as_str),
+            Some("\r" | "\x1b[K")
+        ));
+    }
 
+    #[test]
+    fn persistent_rows_end_with_newline_and_live_rows_restore_column_one() {
         let recorder = RecordingTerm::default();
-        let output = OutputState::default();
-        output.interrupted.store(true, Ordering::Relaxed);
-        output.write_line(&recorder, "Loading model   ");
-        output.finish_interrupted(&recorder, true);
-        assert_eq!(*recorder.0.lock().unwrap(), ["Loading model\n"]);
+        write_line(&recorder, "Completed task   ");
+        assert_eq!(*recorder.0.lock().unwrap(), ["Completed task\n"]);
+        let live = LiveTerm(Arc::new(recorder.clone()), Arc::new(AtomicBool::new(false)));
+        indicatif::TermLike::write_str(&live, "Loading model").unwrap();
+        indicatif::TermLike::flush(&live).unwrap();
+        assert_eq!(recorder.0.lock().unwrap().last().unwrap(), "\r");
+        clear_row(&recorder);
+        let events = recorder.0.lock().unwrap();
+        assert_eq!(
+            events.iter().filter(|event| event.ends_with('\n')).count(),
+            1
+        );
+        assert_eq!(events.last().unwrap(), "\r");
+    }
 
+    #[test]
+    fn interrupted_live_draws_leave_terminal_echo_and_cursor_untouched() {
         let recorder = RecordingTerm::default();
-        let output = OutputState::default();
-        output.interrupted.store(true, Ordering::Relaxed);
-        output.finish_interrupted(&recorder, false);
+        let interrupted = Arc::new(AtomicBool::new(true));
+        let live = LiveTerm(Arc::new(recorder.clone()), interrupted);
+        use indicatif::TermLike;
+        live.move_cursor_up(1).unwrap();
+        live.move_cursor_down(1).unwrap();
+        live.move_cursor_left(1).unwrap();
+        live.move_cursor_right(1).unwrap();
+        live.write_str("Saving").unwrap();
+        live.write_line("Saving").unwrap();
+        live.clear_line().unwrap();
+        live.flush().unwrap();
         assert!(recorder.0.lock().unwrap().is_empty());
     }
 
@@ -720,31 +759,35 @@ mod tests {
     }
 
     #[test]
-    fn cancelled_saving_keeps_one_status_line() {
+    fn cancelled_saving_removes_the_live_row() {
         let recorder = RecordingTerm::default();
+        let interrupted = Arc::new(AtomicBool::new(false));
         let mut progress = Progress {
             bar: ProgressBar::with_draw_target(
                 Some(272),
-                ProgressDrawTarget::term_like(Box::new(UnpaddedTerm(Arc::new(recorder.clone())))),
+                ProgressDrawTarget::term_like(Box::new(LiveTerm(
+                    Arc::new(recorder.clone()),
+                    interrupted.clone(),
+                ))),
             ),
             term: Arc::new(recorder.clone()),
             palette: Palette { enabled: false },
             stage: Stage::Processing,
             encoded: Arc::new(AtomicU64::new(0)),
-            output: Arc::new(OutputState::default()),
+            interrupted,
             finished: false,
         };
         progress.bar.set_style(progress.style());
         progress.advance(272);
         progress.saving(272);
-        progress.output.interrupted.store(true, Ordering::Relaxed);
+        // Model an echo supplied by the terminal, not by the application.
+        indicatif::TermLike::write_str(&recorder, "^C").unwrap();
+        let echo_index = recorder.0.lock().unwrap().len();
+        progress.interrupted.store(true, Ordering::Relaxed);
         progress.abandon();
         progress.abandon();
-        progress
-            .output
-            .finish_interrupted(progress.term.as_ref(), true);
         drop(progress);
-        recorder.assert_last_line_retained("Saving");
+        assert_no_persisted_live_rows(&recorder);
         let events = recorder.0.lock().unwrap();
         assert_eq!(
             events
@@ -754,21 +797,26 @@ mod tests {
             1
         );
         assert!(!events.iter().any(|event| event.contains("Saved")));
+        assert_eq!(&events[echo_index..], ["\x1b[K"]);
     }
 
     #[test]
     fn completed_saving_keeps_both_summaries_without_duplicates() {
         let recorder = RecordingTerm::default();
+        let interrupted = Arc::new(AtomicBool::new(false));
         let mut progress = Progress {
             bar: ProgressBar::with_draw_target(
                 Some(136),
-                ProgressDrawTarget::term_like(Box::new(UnpaddedTerm(Arc::new(recorder.clone())))),
+                ProgressDrawTarget::term_like(Box::new(LiveTerm(
+                    Arc::new(recorder.clone()),
+                    interrupted.clone(),
+                ))),
             ),
             term: Arc::new(recorder.clone()),
             palette: Palette { enabled: false },
             stage: Stage::Processing,
             encoded: Arc::new(AtomicU64::new(0)),
-            output: Arc::new(OutputState::default()),
+            interrupted,
             finished: false,
         };
         progress.bar.set_style(progress.style());
@@ -789,21 +837,23 @@ mod tests {
     }
 
     #[test]
-    fn stopped_or_dropped_progress_keeps_last_frame_status() {
+    fn stopped_or_dropped_progress_clears_the_live_row() {
         for explicitly_abandon in [false, true] {
             let recorder = RecordingTerm::default();
+            let interrupted = Arc::new(AtomicBool::new(false));
             let mut progress = Progress {
                 bar: ProgressBar::with_draw_target(
                     Some(600),
-                    ProgressDrawTarget::term_like(Box::new(UnpaddedTerm(Arc::new(
-                        recorder.clone(),
-                    )))),
+                    ProgressDrawTarget::term_like(Box::new(LiveTerm(
+                        Arc::new(recorder.clone()),
+                        interrupted.clone(),
+                    ))),
                 ),
                 term: Arc::new(recorder.clone()),
                 palette: Palette { enabled: false },
                 stage: Stage::Processing,
                 encoded: Arc::new(AtomicU64::new(0)),
-                output: Arc::new(OutputState::default()),
+                interrupted,
                 finished: false,
             };
             progress.bar.set_style(progress.style());
@@ -812,7 +862,7 @@ mod tests {
                 progress.abandon();
             }
             drop(progress);
-            recorder.assert_last_line_retained("300/600");
+            assert_no_persisted_live_rows(&recorder);
             let events = recorder.0.lock().unwrap();
             assert!(
                 !events
@@ -826,9 +876,13 @@ mod tests {
     fn model_loading_keeps_one_line_and_only_reports_loaded_on_success() {
         for success in [false, true] {
             let recorder = RecordingTerm::default();
+            let interrupted = Arc::new(AtomicBool::new(false));
             let bar = ProgressBar::with_draw_target(
                 None,
-                ProgressDrawTarget::term_like(Box::new(UnpaddedTerm(Arc::new(recorder.clone())))),
+                ProgressDrawTarget::term_like(Box::new(LiveTerm(
+                    Arc::new(recorder.clone()),
+                    interrupted.clone(),
+                ))),
             );
             bar.set_style(ProgressStyle::with_template("{msg}").unwrap());
             let palette = Palette { enabled: true };
@@ -840,21 +894,24 @@ mod tests {
             bar.set_message(line.clone());
             let mut loading = Loading {
                 bar,
-                line,
                 loaded_line,
                 show_when_hidden: false,
                 finished: false,
                 term: Arc::new(recorder.clone()),
-                output: Arc::new(OutputState::default()),
+                interrupted,
             };
             if success {
                 loading.finish();
                 loading.finish();
             } else {
-                loading.output.interrupted.store(true, Ordering::Relaxed);
+                loading.interrupted.store(true, Ordering::Relaxed);
             }
             drop(loading);
-            recorder.assert_last_line_retained(if success { "Loaded" } else { "Loading" });
+            if success {
+                recorder.assert_last_line_retained("Loaded");
+            } else {
+                assert_no_persisted_live_rows(&recorder);
+            }
             let events = recorder.0.lock().unwrap();
             assert_eq!(
                 events
