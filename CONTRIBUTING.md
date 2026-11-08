@@ -97,11 +97,11 @@ Rust owns the public API and processing pipeline. The C++ backend is statically 
 
 Model files must remain user-provided. To add support for a model family, update the runtime graph validation, model fixtures, enabled native operators, and model compatibility documentation together. Validate both loading and inference using the native test and smoke workflow where applicable.
 
-When changing the native dependency set or copied native code, update `third_party/dependencies.lock`, the relevant build configuration, `LICENSES/native/`, and `THIRD_PARTY_NOTICES.md`. Do not edit fetched dependency sources as part of the normal build; apply required local changes through the project’s build overlay.
+When changing the native dependency set or copied native code, update `third_party/dependencies.lock`, the relevant build configuration, `LICENSES/native/`, and `THIRD_PARTY_NOTICES.md`. Do not edit fetched dependency sources as part of the normal build; apply required local changes through the project’s build overlay. Each overlay replacement must validate its own anchor; cancellation patches also check the expected overload count in the pinned source.
 
 ## License report and notices
 
-The Rust dependency license report is generated with cargo-about 0.9.3. The CI command installs only its `cli` feature:
+The Rust dependency license report covers both release targets in `about.toml` and is generated with cargo-about 0.9.3. The CI command installs only its `cli` feature:
 
 ```sh
 cargo install --locked --features cli --version 0.9.3 cargo-about

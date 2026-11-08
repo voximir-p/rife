@@ -77,7 +77,7 @@ rife -i input.mp4 -g -1,0 -j 1:2,2:2 -f 2 output.mp4
 | `-m, --model MODEL`                         | Model directory name. Default: `rife-v4.25`.                                                                       |
 | `-f, --fps-scale FACTOR`                    | Output FPS divided by input FPS. Default: `1`.                                                                     |
 | `-s, --speed FACTOR`                        | Playback speed. Default: `1`; `0.5` is half-speed and `2` is double-speed.                                         |
-| `-c, --crf CRF`                             | Non-negative video CRF override. By default, source CRF metadata is reused when available, otherwise `20` is used. |
+| `-c, --crf CRF`                             | Finite, non-negative video CRF override. By default, source CRF metadata is reused when available, otherwise `20` is used. |
 | `-g, --gpu GPU`                             | `auto` or comma-separated device IDs. Use `-1` for CPU; it can be combined with GPU IDs.                           |
 | `-j, --jobs LOAD:PROCESS[,PROCESS...]:SAVE` | Shared input/output buffering budgets and per-device worker counts. Default: `1:2:2`.                              |
 | `-t, --threshold THRESHOLD`                 | Scene-cut threshold from `0` to `1`. Default: `0.3`; `1` disables scene detection.                                 |
