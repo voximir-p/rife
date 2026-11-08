@@ -4,6 +4,7 @@
 cmake_minimum_required(VERSION 3.15)
 cmake_policy(SET CMP0091 NEW)
 project(${RIFE_NATIVE_LIBRARY} LANGUAGES C CXX)
+include("${CMAKE_CURRENT_SOURCE_DIR}/patches.cmake")
 set(CMAKE_CXX_STANDARD 11)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/settings.h"
@@ -65,10 +66,8 @@ add_subdirectory("${NCNN_SOURCE}" ncnn)
 set(platform_header "${CMAKE_CURRENT_BINARY_DIR}/ncnn/src/platform.h")
 file(READ "${platform_header}" platform_source)
 set(log_anchor "#define NCNN_LOGE(...)\n")
-string(REPLACE "${log_anchor}" "extern \"C\" void rife_record_native_error(const char*, ...) noexcept;\n#define NCNN_LOGE(...) rife_record_native_error(__VA_ARGS__)\n" platform_checked "${platform_source}")
-if(platform_checked STREQUAL platform_source)
-    message(FATAL_ERROR "Unsupported NCNN logging header")
-endif()
+set(platform_checked "${platform_source}")
+rife_replace_checked(platform_checked "logging" "${log_anchor}" "extern \"C\" void rife_record_native_error(const char*, ...) noexcept;\n#define NCNN_LOGE(...) rife_record_native_error(__VA_ARGS__)\n")
 file(WRITE "${platform_header}" "${platform_checked}")
 
 # The pinned NCNN version starts pipeline creation even after a failed weight
@@ -76,17 +75,23 @@ file(WRITE "${platform_header}" "${platform_checked}")
 # dereferencing empty tensors. Generate an overlay; keep fetched sources intact.
 file(READ "${NCNN_SOURCE}/src/net.cpp" net_source)
 set(anchor "#if NCNN_VULKAN\n    if (opt.use_vulkan_compute)\n    {\n        if (!opt.pipeline_cache)")
-string(REPLACE "${anchor}" "    if (ret != 0) return ret; // Do not create pipelines from incomplete weights.\n\n${anchor}" checked_net "${net_source}")
-string(REPLACE "Layer* layer = d->layers[i];\n\n        Option opt1 = opt;" "Layer* layer = d->layers[i];\n        if (!layer) continue;\n\n        Option opt1 = opt;" checked_net "${checked_net}")
-if(checked_net STREQUAL net_source)
-    message(FATAL_ERROR "Unsupported NCNN source: model-load guard anchor not found")
-endif()
-# Cooperative checks at layer boundaries, avoiding unsafe thread termination.
-# Keep this overlay local: the pinned NCNN checkout remains unmodified.
+set(checked_net "${net_source}")
+rife_replace_checked(checked_net "model-load guard" "${anchor}" "    if (ret != 0) return ret; // Do not create pipelines from incomplete weights.\n\n${anchor}")
+rife_replace_checked(checked_net "partial-model cleanup" "Layer* layer = d->layers[i];\n\n        Option opt1 = opt;" "Layer* layer = d->layers[i];\n        if (!layer) continue;\n\n        Option opt1 = opt;" 2)
+# Cooperative checks at every pinned overload, avoiding unsafe termination.
 string(PREPEND checked_net "#include \"cancellation.h\"\n")
-string(REGEX REPLACE "(int NetPrivate::(forward_layer|do_forward_layer|upload_model)\\([^;{]*\n\\{)" "\\1\n    if (rife_cancelled()) return -233;" checked_net "${checked_net}")
-string(REPLACE "int lret = layer->load_model(mb);" "if (rife_cancelled()) return -233;\n        int lret = layer->load_model(mb);" checked_net "${checked_net}")
-string(REPLACE "int cret = layer->create_pipeline(opt1);" "if (rife_cancelled()) return -233;\n        int cret = layer->create_pipeline(opt1);" checked_net "${checked_net}")
+foreach(method IN ITEMS upload_model forward_layer do_forward_layer)
+    if(method STREQUAL "upload_model")
+        set(expected_count 1)
+    else()
+        set(expected_count 3)
+    endif()
+    rife_regex_replace_checked(checked_net "${method} cancellation"
+        "(int NetPrivate::${method}\\([^;{]*\n\\{)"
+        "\\1\n    if (rife_cancelled()) return -233;" ${expected_count})
+endforeach()
+rife_replace_checked(checked_net "weight-load cancellation" "int lret = layer->load_model(mb);" "if (rife_cancelled()) return -233;\n        int lret = layer->load_model(mb);")
+rife_replace_checked(checked_net "pipeline cancellation" "int cret = layer->create_pipeline(opt1);" "if (rife_cancelled()) return -233;\n        int cret = layer->create_pipeline(opt1);")
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/ncnn_net_checked.cpp" "${checked_net}")
 get_target_property(ncnn_sources ncnn SOURCES)
 list(REMOVE_ITEM ncnn_sources net.cpp "${NCNN_SOURCE}/src/net.cpp")
@@ -97,7 +102,8 @@ target_include_directories(ncnn PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 # Backport Vulkan validity fixes without modifying the pinned NCNN checkout.
 file(READ "${NCNN_SOURCE}/src/gpu.cpp" gpu_source)
 set(matrix_anchor "std::vector<VkCooperativeMatrixPropertiesNV> properties(propertyCount);")
-string(REPLACE "${matrix_anchor}" "${matrix_anchor}\n            for (uint32_t i = 0; i < propertyCount; i++) { properties[i].sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_NV; properties[i].pNext = 0; }" checked_gpu "${gpu_source}")
+set(checked_gpu "${gpu_source}")
+rife_replace_checked(checked_gpu "cooperative-matrix initialization" "${matrix_anchor}" "${matrix_anchor}\n            for (uint32_t i = 0; i < propertyCount; i++) { properties[i].sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_NV; properties[i].pNext = 0; }")
 set(storage_anchor "enabled16BitStorageFeatures.uniformAndStorageBuffer16BitAccess = VK_FALSE;")
 set(storage_checked [=[enabled16BitStorageFeatures.uniformAndStorageBuffer16BitAccess = VK_FALSE;
     if (support_VK_KHR_get_physical_device_properties2 && info.support_VK_KHR_16bit_storage())
@@ -110,10 +116,7 @@ set(storage_checked [=[enabled16BitStorageFeatures.uniformAndStorageBuffer16BitA
         vkGetPhysicalDeviceFeatures2KHR(info.physical_device(), &available);
         enabled16BitStorageFeatures.uniformAndStorageBuffer16BitAccess = available16.uniformAndStorageBuffer16BitAccess;
     }]=])
-string(REPLACE "${storage_anchor}" "${storage_checked}" checked_gpu "${checked_gpu}")
-if(checked_gpu STREQUAL gpu_source)
-    message(FATAL_ERROR "Unsupported NCNN GPU source")
-endif()
+rife_replace_checked(checked_gpu "16-bit storage feature query" "${storage_anchor}" "${storage_checked}")
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/ncnn_gpu_checked.cpp" "${checked_gpu}")
 get_target_property(ncnn_sources ncnn SOURCES)
 list(REMOVE_ITEM ncnn_sources gpu.cpp "${NCNN_SOURCE}/src/gpu.cpp")
