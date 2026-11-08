@@ -98,7 +98,7 @@ struct Args {
     #[arg(long, value_name = "ENCODER")]
     audio_codec: Option<String>,
 
-    /// Show input details, GPU names, and extraction/encoding status
+    /// Show model, dimensions, frame rates, and device details
     #[arg(short, long)]
     verbose: bool,
 

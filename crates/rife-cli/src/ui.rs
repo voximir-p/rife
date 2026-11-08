@@ -126,10 +126,9 @@ impl Ui {
             rate,
             term: Arc::new(self.term.clone()),
             palette: self.palette,
-            verbose: self.verbose,
             finished: false,
         };
-        progress.bar.set_style(progress.style(Stage::Interpolating));
+        progress.bar.set_style(progress.style());
         if progress.bar.is_hidden() {
             eprintln!("{} video", self.palette.value(padded(PROGRESS_LABEL)));
         } else {
@@ -157,23 +156,16 @@ impl Drop for Loading {
     }
 }
 
-#[derive(Clone, Copy)]
-enum Stage {
-    Interpolating,
-    Finalizing,
-}
-
 pub(crate) struct Progress {
     bar: ProgressBar,
     rate: Rate,
     term: Arc<dyn indicatif::TermLike>,
     palette: Palette,
-    verbose: bool,
     finished: bool,
 }
 
 impl Progress {
-    fn style(&self, stage: Stage) -> ProgressStyle {
+    fn style(&self) -> ProgressStyle {
         let (term, palette, rate) = (self.term.clone(), self.palette, self.rate);
         ProgressStyle::with_template("{status}")
             .expect("valid progress template")
@@ -188,7 +180,6 @@ impl Progress {
                         rate,
                         width,
                         palette,
-                        stage,
                     );
                     let _ = output.write_str(&line);
                 },
@@ -198,18 +189,6 @@ impl Progress {
     pub(crate) fn advance(&self, frames: u64) {
         // The counter advances only after the encoder has accepted each frame.
         self.bar.set_position(frames);
-    }
-
-    pub(crate) fn finalizing(&self) {
-        if !self.verbose {
-            return;
-        }
-        if self.bar.is_hidden() {
-            eprintln!("{} finalizing", padded("Encoding"));
-        } else {
-            self.bar.set_style(self.style(Stage::Finalizing));
-            self.bar.tick();
-        }
     }
 
     pub(crate) fn finish(&mut self, frames: u64) {
@@ -243,7 +222,6 @@ impl Progress {
             self.rate,
             width,
             self.palette,
-            Stage::Interpolating,
         );
         persist_line(&self.bar, self.term.as_ref(), &line);
         self.finished = true;
@@ -294,7 +272,6 @@ fn timestamp(duration: Duration) -> String {
 
 // Render at draw time, keeping elapsed time/speed current even during slow calls.
 // Choose fields by display width on every redraw so terminal resizing is handled.
-#[allow(clippy::too_many_arguments)]
 fn render_status(
     frames: u64,
     total: Option<u64>,
@@ -302,7 +279,6 @@ fn render_status(
     rate: Rate,
     width: usize,
     palette: Palette,
-    stage: Stage,
 ) -> String {
     let separator = " | ";
     let time = timestamp(elapsed);
@@ -310,12 +286,6 @@ fn render_status(
         "{:.2}x",
         media::realtime_factor(frames, rate, elapsed.as_secs_f64())
     );
-    if matches!(stage, Stage::Finalizing) {
-        let label = padded("Encoding");
-        let detail = "finalizing";
-        let full = format!("{label} {detail}{separator}elapsed {time}");
-        return fit(width, [full, format!("{label} {detail}")]);
-    }
     // A stale underestimate cannot provide a meaningful percentage or ETA.
     let total = total.filter(|&count| count > 0 && frames < count);
     let count = match total {
@@ -461,10 +431,9 @@ mod tests {
                 rate: Rate { num: 60, den: 1 },
                 term: Arc::new(recorder.clone()),
                 palette: Palette { enabled: false },
-                verbose: false,
                 finished: false,
             };
-            progress.bar.set_style(progress.style(Stage::Interpolating));
+            progress.bar.set_style(progress.style());
             progress.advance(300);
             if explicitly_abandon {
                 progress.abandon();
@@ -509,7 +478,6 @@ mod tests {
             Rate { num: 60, den: 1 },
             width,
             Palette { enabled: color },
-            Stage::Interpolating,
         )
     }
 
@@ -538,7 +506,6 @@ mod tests {
             Rate { num: 30, den: 1 },
             120,
             palette,
-            Stage::Interpolating,
         );
         assert!(
             line.contains("80/424 frames (18.9%): elapsed 00:02 | ETA 00:08 | 1.33x"),
@@ -567,9 +534,23 @@ mod tests {
             Rate { num: 60, den: 1 },
             120,
             Palette { enabled: false },
-            Stage::Interpolating,
         );
         assert!(starting.contains("ETA --:--") && starting.contains("0.00x"));
+        let completed = render_status(
+            544,
+            Some(544),
+            Duration::from_secs(31),
+            Rate { num: 63, den: 1 },
+            120,
+            Palette { enabled: false },
+        );
+        assert_eq!(
+            completed,
+            format!(
+                "{} 544 frames: elapsed 00:31 | 0.28x",
+                padded(PROGRESS_LABEL)
+            )
+        );
     }
 
     #[test]
@@ -604,7 +585,7 @@ mod tests {
                 )
             );
         }
-        for label in ["Source", "Target", "Device", "Loading", "Encoding"] {
+        for label in ["Source", "Target", "Device", "Loading"] {
             let aligned = palette.label(label);
             assert_eq!(measure_text_width(&aligned), LABEL_WIDTH);
             assert!(aligned.ends_with(label));

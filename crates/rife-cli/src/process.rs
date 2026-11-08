@@ -488,7 +488,6 @@ pub(crate) fn process(args: Args, cancel: CancellationToken) -> Result<()> {
     );
     drop(sink); // EOF lets the encoder flush and finalize its container.
     let result = result.and_then(|stats| {
-        progress.finalizing();
         decoder.finish()?;
         encoder.finish()?;
         cancel.check()?;

@@ -84,7 +84,7 @@ rife -i input.mp4 -g -1,0 -j 1:2,2:2 -f 2 output.mp4
 | `-y, --overwrite`                           | Replace an existing output. Waits if another rife process holds its output lock.                                   |
 | `--video-codec ENCODER`                     | Override the FFmpeg video encoder. If it does not support CRF, rife uses a bitrate fallback.                       |
 | `--audio-codec ENCODER`                     | Override the audio encoder. At normal speed, audio is copied by default.                                           |
-| `-v, --verbose`                             | Show model, dimensions, frame rates, device names, and processing stages.                                          |
+| `-v, --verbose`                             | Show model, dimensions, frame rates, and device details.                                                            |
 
 FPS scale and playback speed must be finite, positive numbers. When speed changes, audio is re-encoded to match the final video duration while preserving pitch. At normal speed, audio is copied unless `--audio-codec` is supplied. The output container must support a copied audio codec; otherwise, choose a compatible encoder.
 

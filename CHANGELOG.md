@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep the Processing frame count, elapsed time, and speed visible while encoding finishes in verbose mode.
+
 ## [0.1.1] - 2026-11-07
 
 ### Changed

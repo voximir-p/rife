@@ -141,12 +141,12 @@ with tempfile.TemporaryDirectory(prefix="rife-smoke-", dir=root / "target") as d
         assert next(s for s in info["streams"] if s["codec_type"] == "video")["avg_frame_rate"] == "60000/1001"
         assert any(s["codec_type"] == "audio" for s in info["streams"])
     log = rife("-i", source, "-m", "rife-v4.26", "-f", "2", "-v", "--video-codec", "ffv1", "-y", test_root / "verbose.nut")
-    for label in ["Scanning", "Loading", "Source", "Target", "Device", "Encoding"]:
+    for label in ["Scanning", "Loading", "Source", "Target", "Device", "Processing"]:
         assert re.search(rf"^ *{label} +", log, re.M), log
     assert re.search(r"^ +Loading model `rife-v4.26`$", log, re.M), log
     assert log.index("Scanning video frames for output timing") < log.index("Loading model")
     assert re.search(r"^ +Source 64x64 @ 29\.97 fps\n +Target 64x64 @ 59\.94 fps$", log, re.M), log
-    assert re.search(r"^ *Encoding +finalizing$", log, re.M), log
+    assert not re.search(r"^ *Encoding|finalizing", log, re.M), log
     assert not re.search(r"Done:|^ *Video |^ *Model |Scenes|…|\.\.\.|Extracting frames:|Encoding video:|\x1b|\n\n", log, re.M), log
     failed = test_root / "encoder-failure.mp4"
     log = rife("-i", source, "-m", "rife-v4.26", "--video-codec", "rife_missing_encoder", "-y", failed, succeeds=False)
