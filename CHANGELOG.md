@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Show Device above Source and Target in verbose output.
+
 - Show a live Counting frame count, followed by a green Counted total, before loading the model.
 
 ### Fixed

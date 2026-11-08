@@ -447,6 +447,9 @@ pub(crate) fn process(args: Args, cancel: CancellationToken, ui: &Ui) -> Result<
         engine
     };
     cancel.check()?;
+    for device in engine.selected_devices() {
+        ui.info("Device", &device.name);
+    }
     for (label, rate) in [("Source", info.rate), ("Target", output_rate)] {
         ui.info(
             label,
@@ -457,9 +460,6 @@ pub(crate) fn process(args: Args, cancel: CancellationToken, ui: &Ui) -> Result<
                 rate.num as f64 / rate.den as f64
             ),
         );
-    }
-    for device in engine.selected_devices() {
-        ui.info("Device", &device.name);
     }
     // Declare staging before subprocesses so they are reaped before its files
     // are removed, including on Windows and on early returns.
