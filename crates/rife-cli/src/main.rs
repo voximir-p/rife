@@ -150,8 +150,10 @@ fn main() {
     }) {
         ui::warning(format_args!("unable to register Ctrl+C handler: {error}"));
     }
-    let result = process::process(args, token);
+    let ui = ui::Ui::new(args.verbose, interrupted.clone());
+    let result = process::process(args, token, &ui);
     if interrupted.load(Ordering::Relaxed) {
+        ui.finish_interrupted();
         std::process::exit(130);
     }
     if let Err(error) = result {

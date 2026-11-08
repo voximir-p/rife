@@ -413,16 +413,27 @@ pub(crate) fn command(
     let output_rate = timing.rate;
     let container = Container::from_extension(ext);
     let mut cmd = Command::new(ffmpeg);
-    cmd.args(["-hide_banner", "-loglevel", "warning", "-nostdin", "-y"])
-        .args([
-            "-f",
-            "rawvideo",
-            "-pixel_format",
-            config::PIXEL_FORMAT,
-            "-video_size",
-            &format!("{}x{}", dimensions.0, dimensions.1),
-        ])
-        .args(["-framerate", &output_rate.to_string(), "-i", "pipe:0"]);
+    cmd.args([
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-nostdin",
+        "-y",
+        "-nostats",
+        "-progress",
+        "pipe:1",
+        "-stats_period",
+        "0.15",
+    ])
+    .args([
+        "-f",
+        "rawvideo",
+        "-pixel_format",
+        config::PIXEL_FORMAT,
+        "-video_size",
+        &format!("{}x{}", dimensions.0, dimensions.1),
+    ])
+    .args(["-framerate", &output_rate.to_string(), "-i", "pipe:0"]);
 
     let video_only = container.has_video_only_output();
     // FFmpeg requires every input to appear before output-specific options such as -map.

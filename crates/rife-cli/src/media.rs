@@ -414,13 +414,6 @@ fn display_dimensions(width: u32, height: u32, rotation: Option<f64>) -> (u32, u
         (width, height)
     }
 }
-pub(crate) fn realtime_factor(frames: u64, rate: Rate, seconds: f64) -> f64 {
-    if seconds > 0.0 {
-        frames as f64 * rate.den as f64 / rate.num as f64 / seconds
-    } else {
-        0.0
-    }
-}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -449,7 +442,7 @@ mod tests {
         assert_eq!(display_dimensions(1920, 1080, None), (1920, 1080));
     }
     #[test]
-    fn rational_rates_and_realtime_factor_are_exact() {
+    fn rational_rates_are_exact() {
         assert_eq!(
             Rate::parse("30000/1001")
                 .unwrap()
@@ -459,8 +452,6 @@ mod tests {
             "60000/1001"
         );
         assert!(Rate::parse("0/0").is_none());
-        assert_eq!(realtime_factor(60, Rate::parse("30/1").unwrap(), 1.0), 2.0);
-        assert_eq!(realtime_factor(30, Rate::parse("30/1").unwrap(), 10.0), 0.1);
     }
     #[test]
     fn arbitrary_fps_ratios_reduce_before_multiplication() {

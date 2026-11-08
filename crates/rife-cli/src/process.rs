@@ -16,7 +16,10 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     path::Path,
     process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     thread::{self, JoinHandle},
 };
 
@@ -70,6 +73,7 @@ struct ManagedChild {
     stdout: Option<ChildStdout>,
     monitor: Option<JoinHandle<Result<ProcessExit>>>,
     diagnostics: Option<JoinHandle<VecDeque<String>>>,
+    progress: Option<JoinHandle<()>>,
     label: &'static str,
 }
 
@@ -129,6 +133,7 @@ impl ManagedChild {
             stdout,
             monitor: Some(monitor),
             diagnostics: Some(diagnostics),
+            progress: None,
             label,
         })
     }
@@ -148,6 +153,11 @@ impl ManagedChild {
             .unwrap()
             .join()
             .map_err(|_| anyhow!("diagnostic reader panicked"))?;
+        if let Some(progress) = self.progress.take() {
+            progress
+                .join()
+                .map_err(|_| anyhow!("encoding progress reader panicked"))?;
+        }
         if !exit.status.success() {
             return Err(ProcessFailure {
                 label: self.label,
@@ -180,10 +190,19 @@ impl Drop for ManagedChild {
         if let Some(diagnostics) = self.diagnostics.take() {
             let _ = diagnostics.join();
         }
+        if let Some(progress) = self.progress.take() {
+            let _ = progress.join();
+        }
     }
 }
 
 impl ManagedChild {
+    fn track_progress(&mut self, frames: Arc<AtomicU64>) {
+        let stdout = self.take_stdout();
+        self.progress = Some(thread::spawn(move || {
+            read_encoding_progress(BufReader::new(stdout), &frames);
+        }));
+    }
     fn take_stdout(&mut self) -> ChildStdout {
         self.stdout
             .take()
@@ -194,6 +213,17 @@ impl ManagedChild {
         self.stdin
             .take()
             .expect("child stdin is configured as a pipe")
+    }
+}
+
+fn read_encoding_progress(reader: impl BufRead, frames: &AtomicU64) {
+    for line in reader.lines().map_while(std::result::Result::ok) {
+        if let Some(count) = line
+            .strip_prefix("frame=")
+            .and_then(|value| value.trim().parse().ok())
+        {
+            frames.fetch_max(count, Ordering::Relaxed);
+        }
     }
 }
 
@@ -349,13 +379,12 @@ fn count_normalized_frames(
     }
 }
 
-pub(crate) fn process(args: Args, cancel: CancellationToken) -> Result<()> {
+pub(crate) fn process(args: Args, cancel: CancellationToken, ui: &Ui) -> Result<()> {
     let exe = env::current_exe().context("unable to locate the current executable")?;
     let root = dunce::simplified(&exe)
         .parent()
         .context("executable has no parent directory")?;
     let (input, output, parent) = paths::resolve_paths(&args)?;
-    let ui = Ui::new(args.verbose);
     let _output_lock = OutputLock::acquire(&output, args.overwrite, &cancel, || {
         ui.status("Waiting", format_args!("for locked `{}`", output.display()));
     })?;
@@ -466,12 +495,13 @@ pub(crate) fn process(args: Args, cancel: CancellationToken) -> Result<()> {
         &extension,
         &args,
     );
-    command.stdin(Stdio::piped()).stdout(Stdio::null());
+    command.stdin(Stdio::piped()).stdout(Stdio::piped());
     let mut encoder = ManagedChild::spawn(command, "FFmpeg encoding", cancel.clone())?;
     let frames = RawFrames::new(decoder.take_stdout(), info.width, info.height)?;
     let mut sink = encoder.take_stdin();
     let estimated = Some(schedule.output_frames());
-    let mut progress = ui.progress(output_rate, estimated);
+    let mut progress = ui.progress(estimated);
+    encoder.track_progress(progress.encoded_frames());
     let result = engine.interpolate_stream(
         frames,
         StreamOptions {
@@ -488,6 +518,8 @@ pub(crate) fn process(args: Args, cancel: CancellationToken) -> Result<()> {
     );
     drop(sink); // EOF lets the encoder flush and finalize its container.
     let result = result.and_then(|stats| {
+        cancel.check()?;
+        progress.saving(stats.output_frames);
         decoder.finish()?;
         encoder.finish()?;
         cancel.check()?;
@@ -499,8 +531,8 @@ pub(crate) fn process(args: Args, cancel: CancellationToken) -> Result<()> {
         Ok(stats)
     });
     match result {
-        Ok(stats) => {
-            progress.finish(stats.output_frames);
+        Ok(_) => {
+            progress.finish();
             Ok(())
         }
         Err(error) => {
@@ -526,6 +558,12 @@ pub(crate) fn process(args: Args, cancel: CancellationToken) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn encoder_progress_tracks_reported_frames_monotonically() {
+        let frames = AtomicU64::new(0);
+        read_encoding_progress(&b"frame=   3\nfps=1.5\nframe=bad\nprogress=continue\nframe=136\nframe=4\nprogress=end\n"[..], &frames);
+        assert_eq!(frames.load(Ordering::Relaxed), 136);
+    }
     fn failure(
         label: &'static str,
         diagnostics: &str,

@@ -92,6 +92,8 @@ Chapter boundaries and MKV subtitle cue timestamps and durations follow the same
 
 Temporary processing files use the OS temporary directory. If rife cannot create a temporary folder there, it uses the output's parent directory. The finished video is transferred to the output location after encoding succeeds, including when that location is on another drive.
 
+When interpolation ends, the Finished line reports its elapsed time. A separate blue Saving progress bar tracks output encoding with its own timer. The final green Saved line reports the saving time; both summaries remain visible.
+
 ## Models
 
 The default model is `rife-v4.25`. Use `-m` to select another installed model. Model names are resolved directly as directory names under `models/`; for example, `-m rife-v4.28-large` looks for `models/rife-v4.28-large`.

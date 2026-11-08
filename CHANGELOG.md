@@ -9,7 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Keep the Processing frame count, elapsed time, and speed visible while encoding finishes in verbose mode.
+- Show a separate Saving progress bar after interpolation and retain both the interpolation and save summaries.
+- Remove the throughput multiplier from progress output.
+- Avoid duplicated or space-padded status lines on Ctrl+C and finish on a new terminal line.
 
 ## [0.1.1] - 2026-11-07
 

@@ -1,16 +1,103 @@
 // Copyright (C) 2026 Voximir.
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::media::{self, Rate};
 use console::{Term, measure_text_width, style, truncate_str};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
-use std::{fmt, sync::Arc, time::Duration};
+use std::{
+    fmt, io,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 
 const LABEL_WIDTH: usize = 12;
 const REFRESH_INTERVAL: Duration = Duration::from_millis(150);
 const PROGRESS_LABEL: &str = "Processing";
 const MAX_BAR_WIDTH: usize = 32;
 const MIN_BAR_WIDTH: usize = 8;
+
+#[derive(Debug, Default)]
+struct OutputState {
+    interrupted: Arc<AtomicBool>,
+    ended: AtomicBool,
+}
+
+impl OutputState {
+    fn write_line(&self, term: &dyn indicatif::TermLike, line: &str) {
+        let interrupted = self.interrupted.load(Ordering::Relaxed);
+        if term.write_line(line.trim_end()).is_ok() && interrupted {
+            self.ended.store(true, Ordering::Relaxed);
+        }
+        let _ = term.flush();
+    }
+
+    fn finish_interrupted(&self, term: &dyn indicatif::TermLike, interactive: bool) {
+        if interactive
+            && self.interrupted.load(Ordering::Relaxed)
+            && !self.ended.load(Ordering::Relaxed)
+        {
+            self.write_line(term, "");
+        }
+    }
+}
+
+// Indicatif emits a separate space-only write to pad every redraw to the right
+// edge. Suppress it so Ctrl+C echo cannot wrap the row before we clear it.
+#[derive(Debug)]
+struct UnpaddedTerm(Arc<dyn indicatif::TermLike>);
+
+impl indicatif::TermLike for UnpaddedTerm {
+    fn width(&self) -> u16 {
+        self.0.width()
+    }
+    fn height(&self) -> u16 {
+        self.0.height()
+    }
+    fn move_cursor_up(&self, n: usize) -> io::Result<()> {
+        self.0.move_cursor_up(n)
+    }
+    fn move_cursor_down(&self, n: usize) -> io::Result<()> {
+        self.0.move_cursor_down(n)
+    }
+    fn move_cursor_right(&self, n: usize) -> io::Result<()> {
+        self.0.move_cursor_right(n)
+    }
+    fn move_cursor_left(&self, n: usize) -> io::Result<()> {
+        self.0.move_cursor_left(n)
+    }
+    fn write_line(&self, line: &str) -> io::Result<()> {
+        self.0.write_line(line)
+    }
+    fn write_str(&self, text: &str) -> io::Result<()> {
+        if text.bytes().all(|byte| byte == b' ') {
+            Ok(())
+        } else {
+            self.0.write_str(text)
+        }
+    }
+    fn clear_line(&self) -> io::Result<()> {
+        self.0.clear_line()
+    }
+    fn flush(&self) -> io::Result<()> {
+        self.0.flush()
+    }
+}
+
+fn draw_target(term: &Term) -> ProgressDrawTarget {
+    if term.is_term() && !console::is_dumb() {
+        ProgressDrawTarget::term_like_with_hz(Box::new(UnpaddedTerm(Arc::new(term.clone()))), 10)
+    } else {
+        ProgressDrawTarget::hidden()
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Stage {
+    Processing,
+    Saving,
+}
 
 fn padded(value: impl fmt::Display) -> String {
     format!("{:>LABEL_WIDTH$}", value.to_string())
@@ -63,14 +150,19 @@ pub(crate) struct Ui {
     verbose: bool,
     palette: Palette,
     term: Term,
+    output: Arc<OutputState>,
 }
 
 impl Ui {
-    pub(crate) fn new(verbose: bool) -> Self {
+    pub(crate) fn new(verbose: bool, interrupted: Arc<AtomicBool>) -> Self {
         Self {
             verbose,
             palette: Palette::stderr(),
             term: Term::stderr(),
+            output: Arc::new(OutputState {
+                interrupted,
+                ended: AtomicBool::new(false),
+            }),
         }
     }
 
@@ -80,12 +172,23 @@ impl Ui {
         }
     }
 
+    pub(crate) fn finish_interrupted(&self) {
+        // Static status rows already end in a newline, but a terminal may have
+        // echoed ^C on the following row. Live rows finalized after the signal
+        // already supply their own newline and must not gain a second one.
+        self.output
+            .finish_interrupted(&self.term, self.term.is_term());
+    }
+
     pub(crate) fn status(&self, label: &str, value: impl fmt::Display) {
-        eprintln!("{} {value}", self.palette.label(label));
+        self.output.write_line(
+            &self.term,
+            &format!("{} {value}", self.palette.label(label)),
+        );
     }
 
     pub(crate) fn activity(&self, label: &str, detail: &str) -> Loading {
-        let bar = ProgressBar::new_spinner();
+        let bar = ProgressBar::with_draw_target(None, draw_target(&self.term));
         if bar.is_hidden() {
             self.info(label, detail);
         } else {
@@ -101,7 +204,7 @@ impl Ui {
                     .with_key(
                         "activity",
                         move |_: &ProgressState, output: &mut dyn fmt::Write| {
-                            let width = usize::from(term.size().1).saturating_sub(1);
+                            let width = usize::from(term.size().1).saturating_sub(3);
                             let line = format!("{} {detail}", palette.label(&label));
                             let line = truncate_str(&line, width, "");
                             let _ = output.write_str(&line);
@@ -116,21 +219,27 @@ impl Ui {
             keep: label == "Loading",
             line: format!("{} {detail}", self.palette.label(label)),
             term: Arc::new(self.term.clone()),
+            output: self.output.clone(),
         }
     }
 
-    pub(crate) fn progress(&self, rate: Rate, total: Option<u64>) -> Progress {
-        let bar = ProgressBar::with_draw_target(total, ProgressDrawTarget::stderr_with_hz(10));
+    pub(crate) fn progress(&self, total: Option<u64>) -> Progress {
+        let bar = ProgressBar::with_draw_target(total, draw_target(&self.term));
         let progress = Progress {
             bar,
-            rate,
             term: Arc::new(self.term.clone()),
+            output: self.output.clone(),
             palette: self.palette,
+            stage: Stage::Processing,
+            encoded: Arc::new(AtomicU64::new(0)),
             finished: false,
         };
         progress.bar.set_style(progress.style());
         if progress.bar.is_hidden() {
-            eprintln!("{} video", self.palette.value(padded(PROGRESS_LABEL)));
+            self.output.write_line(
+                &self.term,
+                &format!("{} video", self.palette.value(padded(PROGRESS_LABEL))),
+            );
         } else {
             progress.bar.enable_steady_tick(REFRESH_INTERVAL);
             progress.bar.tick();
@@ -144,13 +253,15 @@ pub(crate) struct Loading {
     keep: bool,
     line: String,
     term: Arc<dyn indicatif::TermLike>,
+    output: Arc<OutputState>,
 }
 
 impl Drop for Loading {
     fn drop(&mut self) {
         if self.keep && !self.bar.is_hidden() {
-            persist_line(&self.bar, self.term.as_ref(), &self.line);
+            persist_line(&self.bar, self.term.as_ref(), &self.output, &self.line);
         } else {
+            self.bar.disable_steady_tick();
             self.bar.finish_and_clear();
         }
     }
@@ -158,28 +269,41 @@ impl Drop for Loading {
 
 pub(crate) struct Progress {
     bar: ProgressBar,
-    rate: Rate,
     term: Arc<dyn indicatif::TermLike>,
     palette: Palette,
+    stage: Stage,
+    encoded: Arc<AtomicU64>,
+    output: Arc<OutputState>,
     finished: bool,
 }
 
 impl Progress {
     fn style(&self) -> ProgressStyle {
-        let (term, palette, rate) = (self.term.clone(), self.palette, self.rate);
+        let (term, palette, stage, encoded) = (
+            self.term.clone(),
+            self.palette,
+            self.stage,
+            self.encoded.clone(),
+        );
         ProgressStyle::with_template("{status}")
             .expect("valid progress template")
             .with_key(
                 "status",
                 move |state: &ProgressState, output: &mut dyn fmt::Write| {
-                    let width = usize::from(term.width()).saturating_sub(1);
+                    let width = usize::from(term.width()).saturating_sub(3);
                     let line = render_status(
-                        state.pos(),
+                        if matches!(stage, Stage::Saving) {
+                            encoded
+                                .load(Ordering::Relaxed)
+                                .min(state.len().unwrap_or(u64::MAX))
+                        } else {
+                            state.pos()
+                        },
                         state.len(),
                         state.elapsed(),
-                        rate,
                         width,
                         palette,
+                        stage,
                     );
                     let _ = output.write_str(&line);
                 },
@@ -191,18 +315,37 @@ impl Progress {
         self.bar.set_position(frames);
     }
 
-    pub(crate) fn finish(&mut self, frames: u64) {
+    pub(crate) fn saving(&mut self, frames: u64) {
+        let hidden = self.bar.is_hidden();
         let message = finished(frames, self.bar.elapsed(), self.palette);
-        let width = if self.bar.is_hidden() {
-            usize::MAX
-        } else {
-            usize::from(self.term.width()).saturating_sub(1)
-        };
-        persist_line(
-            &self.bar,
-            self.term.as_ref(),
-            &truncate_str(&message, width, ""),
+        persist_line(&self.bar, self.term.as_ref(), &self.output, &message);
+        self.stage = Stage::Saving;
+        self.bar = ProgressBar::with_draw_target(
+            Some(frames),
+            if hidden {
+                ProgressDrawTarget::hidden()
+            } else {
+                ProgressDrawTarget::term_like_with_hz(Box::new(UnpaddedTerm(self.term.clone())), 10)
+            },
         );
+        self.bar.set_style(self.style());
+        if !hidden {
+            self.bar.enable_steady_tick(REFRESH_INTERVAL);
+            self.bar.tick();
+        }
+    }
+
+    pub(crate) fn encoded_frames(&self) -> Arc<AtomicU64> {
+        self.encoded.clone()
+    }
+
+    pub(crate) fn finish(&mut self) {
+        let message = saved(
+            self.bar.length().unwrap_or(self.bar.position()),
+            self.bar.elapsed(),
+            self.palette,
+        );
+        persist_line(&self.bar, self.term.as_ref(), &self.output, &message);
         self.finished = true;
     }
 
@@ -213,17 +356,23 @@ impl Progress {
         let width = if self.bar.is_hidden() {
             usize::MAX
         } else {
-            usize::from(self.term.width()).saturating_sub(1)
+            usize::from(self.term.width()).saturating_sub(3)
         };
         let line = render_status(
-            self.bar.position(),
+            if matches!(self.stage, Stage::Saving) {
+                self.encoded
+                    .load(Ordering::Relaxed)
+                    .min(self.bar.length().unwrap_or(u64::MAX))
+            } else {
+                self.bar.position()
+            },
             self.bar.length(),
             self.bar.elapsed(),
-            self.rate,
             width,
             self.palette,
+            self.stage,
         );
-        persist_line(&self.bar, self.term.as_ref(), &line);
+        persist_line(&self.bar, self.term.as_ref(), &self.output, &line);
         self.finished = true;
     }
 }
@@ -234,26 +383,48 @@ impl Drop for Progress {
     }
 }
 
-fn persist_line(bar: &ProgressBar, term: &dyn indicatif::TermLike, line: &str) {
-    // Indicatif pads to the right margin without an explicit newline. Windows
-    // hosts differ in wrapping behavior, so finish through a real line write
-    // before ordinary stderr messages (details/errors) resume.
+fn persist_line(
+    bar: &ProgressBar,
+    term: &dyn indicatif::TermLike,
+    output: &OutputState,
+    line: &str,
+) {
+    let width = if bar.is_hidden() {
+        usize::MAX
+    } else {
+        usize::from(term.width()).saturating_sub(3)
+    };
+    // Stop redraws before clearing and committing exactly one newline-terminated row.
+    bar.disable_steady_tick();
     bar.finish_and_clear();
-    let _ = term.write_line(line);
-    let _ = term.flush();
+    output.write_line(term, &truncate_str(line, width, ""));
 }
 
-fn finished(frames: u64, elapsed: Duration, palette: Palette) -> String {
-    let time = if elapsed.as_secs() >= 60 {
+fn elapsed_time(elapsed: Duration) -> String {
+    if elapsed.as_secs() >= 60 {
         let seconds = elapsed
             .as_secs()
             .saturating_add(u64::from(elapsed.subsec_nanos() >= 500_000_000));
         format!("{}m {}s", seconds / 60, seconds % 60)
     } else {
         format!("{:.2}s", elapsed.as_secs_f64())
-    };
-    let detail = style(format!("interpolating {frames} frames in {time}"));
-    format!("{} {detail}", palette.label("Finished"))
+    }
+}
+
+fn finished(frames: u64, elapsed: Duration, palette: Palette) -> String {
+    format!(
+        "{} interpolating {frames} frames in {}",
+        palette.label("Finished"),
+        elapsed_time(elapsed)
+    )
+}
+
+fn saved(frames: u64, elapsed: Duration, palette: Palette) -> String {
+    format!(
+        "{} {frames} frames in {}",
+        palette.label("Saved"),
+        elapsed_time(elapsed)
+    )
 }
 
 fn timestamp(duration: Duration) -> String {
@@ -270,34 +441,48 @@ fn timestamp(duration: Duration) -> String {
     }
 }
 
-// Render at draw time, keeping elapsed time/speed current even during slow calls.
+// Render at draw time, keeping elapsed time current even during slow calls.
 // Choose fields by display width on every redraw so terminal resizing is handled.
 fn render_status(
     frames: u64,
     total: Option<u64>,
     elapsed: Duration,
-    rate: Rate,
     width: usize,
     palette: Palette,
+    stage: Stage,
 ) -> String {
     let separator = " | ";
     let time = timestamp(elapsed);
-    let speed = format!(
-        "{:.2}x",
-        media::realtime_factor(frames, rate, elapsed.as_secs_f64())
-    );
     // A stale underestimate cannot provide a meaningful percentage or ETA.
-    let total = total.filter(|&count| count > 0 && frames < count);
+    // Saving retains the full bar until encoder shutdown and file commit finish.
+    let total = total.filter(|&count| {
+        count > 0
+            && if matches!(stage, Stage::Saving) {
+                frames <= count
+            } else {
+                frames < count
+            }
+    });
     let count = match total {
         Some(total) => format!("{frames}/{total}"),
         None => frames.to_string(),
     };
-    let label = palette.value(padded(PROGRESS_LABEL));
+    let label = if matches!(stage, Stage::Saving) {
+        style(padded("Saving"))
+            .blue()
+            .bold()
+            .force_styling(palette.enabled)
+            .to_string()
+    } else {
+        palette.value(padded(PROGRESS_LABEL))
+    };
     let mut percent = String::new();
     let mut eta = String::new();
     if let Some(total) = total {
         percent = format!(" ({:.1}%)", frames as f64 / total as f64 * 100.0);
-        let remaining = if frames > 0 && !elapsed.is_zero() {
+        let remaining = if frames == total {
+            Some(Duration::ZERO)
+        } else if frames > 0 && !elapsed.is_zero() {
             Duration::try_from_secs_f64(
                 elapsed.as_secs_f64() * total.saturating_sub(frames) as f64 / frames as f64,
             )
@@ -311,10 +496,10 @@ fn render_status(
         );
     }
     let suffixes = [
-        format!("{count} frames{percent}: elapsed {time}{eta}{separator}{speed}"),
-        format!("{count} frames{percent}: {time}{eta}{separator}{speed}"),
-        format!("{count}{percent}: {time}{eta}{separator}{speed}"),
-        format!("{count}{percent}{eta}{separator}{speed}"),
+        format!("{count} frames{percent}: elapsed {time}{eta}"),
+        format!("{count} frames{percent}: {time}{eta}"),
+        format!("{count}{percent}: {time}{eta}"),
+        format!("{count}{percent}{eta}"),
     ];
     if let Some(total) = total {
         for suffix in &suffixes {
@@ -333,8 +518,7 @@ fn render_status(
             format!("{label} {}", suffixes[0]),
             format!("{label} {}", suffixes[1]),
             format!("{label} {}", suffixes[2]),
-            format!("{label} {count}{separator}{speed}"),
-            format!("{count} {speed}"),
+            format!("{label} {count}"),
             count,
         ],
     )
@@ -416,7 +600,163 @@ mod tests {
                     .any(|event| event == "<clear>"),
                 "{events:?}"
             );
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| event.contains(text) && event.ends_with('\n'))
+                    .count(),
+                1,
+                "{events:?}"
+            );
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| !event.is_empty() && event.bytes().all(|byte| byte == b' ')),
+                "unexpected padding: {events:?}"
+            );
         }
+    }
+
+    #[test]
+    fn interrupted_output_ends_once_without_trailing_spaces() {
+        let recorder = RecordingTerm::default();
+        let output = OutputState::default();
+        output.write_line(&recorder, "Scanning video frames   ");
+        output.interrupted.store(true, Ordering::Relaxed);
+        output.finish_interrupted(&recorder, true);
+        output.finish_interrupted(&recorder, true);
+        assert_eq!(
+            *recorder.0.lock().unwrap(),
+            ["Scanning video frames\n", "\n"]
+        );
+
+        let recorder = RecordingTerm::default();
+        let output = OutputState::default();
+        output.interrupted.store(true, Ordering::Relaxed);
+        output.write_line(&recorder, "Loading model   ");
+        output.finish_interrupted(&recorder, true);
+        assert_eq!(*recorder.0.lock().unwrap(), ["Loading model\n"]);
+
+        let recorder = RecordingTerm::default();
+        let output = OutputState::default();
+        output.interrupted.store(true, Ordering::Relaxed);
+        output.finish_interrupted(&recorder, false);
+        assert!(recorder.0.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn saving_has_blue_progress_and_saved_has_a_green_summary() {
+        let line = render_status(
+            3,
+            Some(272),
+            Duration::from_secs(12),
+            120,
+            Palette { enabled: false },
+            Stage::Saving,
+        );
+        assert_eq!(
+            line,
+            format!(
+                "{} [>                               ] 3/272 frames (1.1%): elapsed 00:12 | ETA 17:56",
+                padded("Saving")
+            )
+        );
+        let colored = render_status(
+            272,
+            Some(272),
+            Duration::from_secs(12),
+            120,
+            Palette { enabled: true },
+            Stage::Saving,
+        );
+        assert!(colored.contains("\x1b[34m"), "{colored:?}");
+        assert!(!colored.contains("\x1b[36m"), "{colored:?}");
+        let summary = saved(136, Duration::from_millis(1940), Palette { enabled: true });
+        assert!(summary.contains("\x1b[32m"), "{summary:?}");
+        assert!(
+            summary.ends_with("\x1b[0m 136 frames in 1.94s"),
+            "{summary:?}"
+        );
+        for width in [0, 1, 10, 20, 40, 80] {
+            let line = render_status(
+                272,
+                Some(272),
+                Duration::from_secs(12),
+                width,
+                Palette { enabled: true },
+                Stage::Saving,
+            );
+            assert!(measure_text_width(&line) <= width);
+        }
+    }
+
+    #[test]
+    fn cancelled_saving_keeps_one_status_line() {
+        let recorder = RecordingTerm::default();
+        let mut progress = Progress {
+            bar: ProgressBar::with_draw_target(
+                Some(272),
+                ProgressDrawTarget::term_like(Box::new(UnpaddedTerm(Arc::new(recorder.clone())))),
+            ),
+            term: Arc::new(recorder.clone()),
+            palette: Palette { enabled: false },
+            stage: Stage::Processing,
+            encoded: Arc::new(AtomicU64::new(0)),
+            output: Arc::new(OutputState::default()),
+            finished: false,
+        };
+        progress.bar.set_style(progress.style());
+        progress.advance(272);
+        progress.saving(272);
+        progress.output.interrupted.store(true, Ordering::Relaxed);
+        progress.abandon();
+        progress.abandon();
+        progress
+            .output
+            .finish_interrupted(progress.term.as_ref(), true);
+        drop(progress);
+        recorder.assert_last_line_retained("Saving");
+        let events = recorder.0.lock().unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.contains("Finished") && event.ends_with('\n'))
+                .count(),
+            1
+        );
+        assert!(!events.iter().any(|event| event.contains("Saved")));
+    }
+
+    #[test]
+    fn completed_saving_keeps_both_finished_lines_without_duplicates() {
+        let recorder = RecordingTerm::default();
+        let mut progress = Progress {
+            bar: ProgressBar::with_draw_target(
+                Some(136),
+                ProgressDrawTarget::term_like(Box::new(UnpaddedTerm(Arc::new(recorder.clone())))),
+            ),
+            term: Arc::new(recorder.clone()),
+            palette: Palette { enabled: false },
+            stage: Stage::Processing,
+            encoded: Arc::new(AtomicU64::new(0)),
+            output: Arc::new(OutputState::default()),
+            finished: false,
+        };
+        progress.bar.set_style(progress.style());
+        progress.advance(136);
+        progress.saving(136);
+        progress.encoded.store(136, Ordering::Relaxed);
+        progress.finish();
+        drop(progress);
+        recorder.assert_last_line_retained("Saved");
+        let events = recorder.0.lock().unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.contains("Finished") && event.ends_with('\n'))
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -426,11 +766,15 @@ mod tests {
             let mut progress = Progress {
                 bar: ProgressBar::with_draw_target(
                     Some(600),
-                    ProgressDrawTarget::term_like(Box::new(recorder.clone())),
+                    ProgressDrawTarget::term_like(Box::new(UnpaddedTerm(Arc::new(
+                        recorder.clone(),
+                    )))),
                 ),
-                rate: Rate { num: 60, den: 1 },
                 term: Arc::new(recorder.clone()),
                 palette: Palette { enabled: false },
+                stage: Stage::Processing,
+                encoded: Arc::new(AtomicU64::new(0)),
+                output: Arc::new(OutputState::default()),
                 finished: false,
             };
             progress.bar.set_style(progress.style());
@@ -454,7 +798,7 @@ mod tests {
         let recorder = RecordingTerm::default();
         let bar = ProgressBar::with_draw_target(
             None,
-            ProgressDrawTarget::term_like(Box::new(recorder.clone())),
+            ProgressDrawTarget::term_like(Box::new(UnpaddedTerm(Arc::new(recorder.clone())))),
         );
         bar.set_style(ProgressStyle::with_template("{msg}").unwrap());
         let detail = format!("Loading model `{}`", crate::Model::default());
@@ -465,6 +809,7 @@ mod tests {
             keep: true,
             line,
             term: Arc::new(recorder.clone()),
+            output: Arc::new(OutputState::default()),
         };
         drop(loading);
         recorder.assert_last_line_retained(&detail);
@@ -475,21 +820,21 @@ mod tests {
             frames,
             total,
             Duration::from_secs(10),
-            Rate { num: 60, den: 1 },
             width,
             Palette { enabled: color },
+            Stage::Processing,
         )
     }
 
     #[test]
-    fn reports_actual_count_estimated_total_and_video_throughput() {
+    fn reports_actual_count_estimated_total_and_elapsed_time() {
         let line = status(300, Some(600), 120, false);
         assert!(
             line.starts_with(&format!("{} [", padded(PROGRESS_LABEL)))
                 && line.contains("] 300/600 frames (50.0%): elapsed"),
             "{line}"
         );
-        assert!(line.contains("elapsed 00:10 | ETA 00:10 | 0.50x"), "{line}");
+        assert!(line.contains("elapsed 00:10 | ETA 00:10"), "{line}");
     }
 
     #[test]
@@ -503,12 +848,12 @@ mod tests {
             80,
             Some(424),
             Duration::from_secs(2),
-            Rate { num: 30, den: 1 },
             120,
             palette,
+            Stage::Processing,
         );
         assert!(
-            line.contains("80/424 frames (18.9%): elapsed 00:02 | ETA 00:08 | 1.33x"),
+            line.contains("80/424 frames (18.9%): elapsed 00:02 | ETA 00:08"),
             "{line}"
         );
         let colored = status(300, Some(600), 120, true);
@@ -531,25 +876,22 @@ mod tests {
             0,
             Some(600),
             Duration::ZERO,
-            Rate { num: 60, den: 1 },
             120,
             Palette { enabled: false },
+            Stage::Processing,
         );
-        assert!(starting.contains("ETA --:--") && starting.contains("0.00x"));
+        assert!(starting.contains("ETA --:--") && !starting.contains("0.00x"));
         let completed = render_status(
             544,
             Some(544),
             Duration::from_secs(31),
-            Rate { num: 63, den: 1 },
             120,
             Palette { enabled: false },
+            Stage::Processing,
         );
         assert_eq!(
             completed,
-            format!(
-                "{} 544 frames: elapsed 00:31 | 0.28x",
-                padded(PROGRESS_LABEL)
-            )
+            format!("{} 544 frames: elapsed 00:31", padded(PROGRESS_LABEL))
         );
     }
 
@@ -603,7 +945,7 @@ mod tests {
                 );
                 if width >= 40 {
                     assert!(line.contains("1250/2000"), "{line:?}");
-                    assert!(line.contains('x'), "{line:?}");
+                    assert!(!line.contains('x'), "{line:?}");
                 }
             }
         }
