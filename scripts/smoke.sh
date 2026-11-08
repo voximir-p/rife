@@ -122,7 +122,7 @@ with tempfile.TemporaryDirectory(prefix="rife-smoke-", dir=root / "target") as d
         log = rife("-i", source, "-m", "rife-v4.26", "-f", "2", "-t", threshold,
                    "--video-codec", "ffv1", "-y", output)
         lines = log.splitlines()
-        assert len(lines) == 3 and re.fullmatch(r" +Scanning video frames for output timing", lines[0]), log
+        assert len(lines) == 3 and re.fullmatch(r" +Counted 6 frames in total", lines[0]), log
         assert re.fullmatch(r"   Processed 12 frames in (?:[0-9]+\.[0-9]{2}s|[0-9]+m [0-9]+s)", lines[1]), log
         assert re.fullmatch(r" +Saved 12 frames in (?:[0-9]+\.[0-9]{2}s|[0-9]+m [0-9]+s)", lines[2]), log
         assert not re.search(r"Done:|~|\x1b|\| [0-9]+\.[0-9]+x", log), log
@@ -141,10 +141,10 @@ with tempfile.TemporaryDirectory(prefix="rife-smoke-", dir=root / "target") as d
         assert next(s for s in info["streams"] if s["codec_type"] == "video")["avg_frame_rate"] == "60000/1001"
         assert any(s["codec_type"] == "audio" for s in info["streams"])
     log = rife("-i", source, "-m", "rife-v4.26", "-f", "2", "-v", "--video-codec", "ffv1", "-y", test_root / "verbose.nut")
-    for label in ["Scanning", "Loaded", "Source", "Target", "Device", "Processed", "Saved"]:
+    for label in ["Counted", "Loaded", "Source", "Target", "Device", "Processed", "Saved"]:
         assert re.search(rf"^ *{label} +", log, re.M), log
-    assert not re.search(r"^ *(?:Loading|Processing|Saving)\b", log, re.M), log
-    assert log.index("Scanning video frames for output timing") < log.index("Loaded model")
+    assert not re.search(r"^ *(?:Counting|Loading|Processing|Saving)\b", log, re.M), log
+    assert log.index("Counted 6 frames in total") < log.index("Loaded model")
     assert re.search(r"^ +Loaded model `rife-v4.26`$", log, re.M), log
     assert re.search(r"^ +Source 64x64 @ 29\.97 fps\n +Target 64x64 @ 59\.94 fps$", log, re.M), log
     assert not re.search(r"^ *Encoding|finalizing", log, re.M), log

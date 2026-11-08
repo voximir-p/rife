@@ -210,41 +210,33 @@ impl Ui {
         );
     }
 
-    pub(crate) fn loading(&self, detail: &str) -> Loading {
-        let label = "Loading";
-        let bar =
-            ProgressBar::with_draw_target(None, draw_target(&self.term, self.interrupted.clone()));
-        if !bar.is_hidden() {
-            let (label, detail, term, palette) = (
-                label.to_owned(),
-                detail.to_owned(),
-                self.term.clone(),
-                self.palette,
-            );
-            bar.set_style(
-                ProgressStyle::with_template("{activity}")
-                    .expect("valid activity template")
-                    .with_key(
-                        "activity",
-                        move |_: &ProgressState, output: &mut dyn fmt::Write| {
-                            let width = usize::from(term.size().1).saturating_sub(3);
-                            let line = format!("{} {detail}", palette.value(padded(&label)));
-                            let line = truncate_str(&line, width, "");
-                            let _ = output.write_str(&line);
-                        },
-                    ),
-            );
-            bar.enable_steady_tick(REFRESH_INTERVAL);
-            bar.tick();
-        }
-        Loading {
-            bar,
-            loaded_line: format!("{} {detail}", self.palette.label("Loaded")),
-            show_when_hidden: self.verbose,
+    pub(crate) fn counting(&self) -> Activity {
+        self.activity(ActivityKind::Counting, true)
+    }
+
+    pub(crate) fn loading(&self, detail: &str) -> Activity {
+        self.activity(ActivityKind::Loading(detail.to_owned()), self.verbose)
+    }
+
+    fn activity(&self, kind: ActivityKind, show_when_hidden: bool) -> Activity {
+        let activity = Activity {
+            bar: ProgressBar::with_draw_target(
+                None,
+                draw_target(&self.term, self.interrupted.clone()),
+            ),
+            kind,
+            palette: self.palette,
+            show_when_hidden,
             finished: false,
             term: Arc::new(self.term.clone()),
             interrupted: self.interrupted.clone(),
+        };
+        activity.bar.set_style(activity.style());
+        if !activity.bar.is_hidden() {
+            activity.bar.enable_steady_tick(REFRESH_INTERVAL);
+            activity.bar.tick();
         }
+        activity
     }
 
     pub(crate) fn progress(&self, total: Option<u64>) -> Progress {
@@ -268,16 +260,59 @@ impl Ui {
     }
 }
 
-pub(crate) struct Loading {
+#[derive(Clone)]
+enum ActivityKind {
+    Counting,
+    Loading(String),
+}
+
+impl ActivityKind {
+    fn running(&self, frames: u64, palette: Palette) -> String {
+        let (label, detail) = match self {
+            Self::Counting => ("Counting", format!("{frames} frames")),
+            Self::Loading(detail) => ("Loading", detail.clone()),
+        };
+        format!("{} {detail}", palette.value(padded(label)))
+    }
+
+    fn completed(&self, frames: u64, palette: Palette) -> String {
+        let (label, detail) = match self {
+            Self::Counting => ("Counted", format!("{frames} frames in total")),
+            Self::Loading(detail) => ("Loaded", detail.clone()),
+        };
+        format!("{} {detail}", palette.label(label))
+    }
+}
+
+pub(crate) struct Activity {
     bar: ProgressBar,
-    loaded_line: String,
+    kind: ActivityKind,
+    palette: Palette,
     show_when_hidden: bool,
     finished: bool,
     term: Arc<dyn indicatif::TermLike>,
     interrupted: Arc<AtomicBool>,
 }
 
-impl Loading {
+impl Activity {
+    fn style(&self) -> ProgressStyle {
+        let (kind, palette, term) = (self.kind.clone(), self.palette, self.term.clone());
+        ProgressStyle::with_template("{activity}")
+            .expect("valid activity template")
+            .with_key(
+                "activity",
+                move |state: &ProgressState, output: &mut dyn fmt::Write| {
+                    let width = usize::from(term.width()).saturating_sub(3);
+                    let line = kind.running(state.pos(), palette);
+                    let _ = output.write_str(&truncate_str(&line, width, ""));
+                },
+            )
+    }
+
+    pub(crate) fn advance(&self, frames: u64) {
+        self.bar.set_position(frames);
+    }
+
     pub(crate) fn finish(&mut self) {
         if self.finished {
             return;
@@ -288,7 +323,8 @@ impl Loading {
             return;
         }
         if !self.bar.is_hidden() || self.show_when_hidden {
-            persist_line(&self.bar, self.term.as_ref(), &self.loaded_line);
+            let line = self.kind.completed(self.bar.position(), self.palette);
+            persist_line(&self.bar, self.term.as_ref(), &line);
         } else {
             clear_bar(&self.bar);
         }
@@ -296,7 +332,7 @@ impl Loading {
     }
 }
 
-impl Drop for Loading {
+impl Drop for Activity {
     fn drop(&mut self) {
         if !self.finished {
             clear_live_line(&self.bar, self.term.as_ref(), &self.interrupted);
@@ -663,7 +699,8 @@ mod tests {
             !events.iter().any(|event| event.ends_with('\n')
                 && (event.contains("Loading")
                     || event.contains("Processing")
-                    || event.contains("Saving"))),
+                    || event.contains("Saving")
+                    || event.contains("Counting"))),
             "{events:?}"
         );
         assert!(
@@ -884,22 +921,23 @@ mod tests {
                     interrupted.clone(),
                 ))),
             );
-            bar.set_style(ProgressStyle::with_template("{msg}").unwrap());
             let palette = Palette { enabled: true };
             let detail = format!("model `{}`", crate::Model::default());
             let line = format!("{} {detail}", palette.value(padded("Loading")));
             let loaded_line = format!("{} {detail}", palette.label("Loaded"));
             assert!(line.contains("\x1b[36m"));
             assert!(loaded_line.contains("\x1b[32m"));
-            bar.set_message(line.clone());
-            let mut loading = Loading {
+            let mut loading = Activity {
                 bar,
-                loaded_line,
+                kind: ActivityKind::Loading(detail),
+                palette,
                 show_when_hidden: false,
                 finished: false,
                 term: Arc::new(recorder.clone()),
                 interrupted,
             };
+            loading.bar.set_style(loading.style());
+            loading.bar.tick();
             if success {
                 loading.finish();
                 loading.finish();
@@ -920,6 +958,76 @@ mod tests {
                     .count(),
                 usize::from(success)
             );
+        }
+    }
+
+    #[test]
+    fn counting_tracks_frames_and_only_retains_successful_totals() {
+        for outcome in ["complete", "cancel", "error", "redirected"] {
+            let recorder = RecordingTerm::default();
+            let interrupted = Arc::new(AtomicBool::new(false));
+            let mut counting = Activity {
+                bar: ProgressBar::with_draw_target(
+                    None,
+                    if outcome == "redirected" {
+                        ProgressDrawTarget::hidden()
+                    } else {
+                        ProgressDrawTarget::term_like(Box::new(LiveTerm(
+                            Arc::new(recorder.clone()),
+                            interrupted.clone(),
+                        )))
+                    },
+                ),
+                kind: ActivityKind::Counting,
+                palette: Palette { enabled: true },
+                show_when_hidden: true,
+                finished: false,
+                term: Arc::new(recorder.clone()),
+                interrupted,
+            };
+            counting.bar.set_style(counting.style());
+            counting.advance(1651);
+            if outcome != "redirected" {
+                let events = recorder.0.lock().unwrap();
+                let line = events
+                    .iter()
+                    .find(|event| event.contains("Counting"))
+                    .unwrap();
+                assert!(line.contains("\x1b[36m"), "{events:?}");
+                assert!(line.ends_with("1651 frames"), "{events:?}");
+                assert_eq!(events.last().unwrap(), "\r");
+            }
+            counting.advance(13009);
+            match outcome {
+                "complete" | "redirected" => {
+                    counting.finish();
+                    counting.finish();
+                }
+                "cancel" => {
+                    indicatif::TermLike::write_str(&recorder, "^C").unwrap();
+                    counting.interrupted.store(true, Ordering::Relaxed);
+                    counting.finish();
+                }
+                _ => {}
+            }
+            drop(counting);
+            if matches!(outcome, "complete" | "redirected") {
+                recorder.assert_last_line_retained("Counted");
+                let events = recorder.0.lock().unwrap();
+                let summary = events.last().unwrap();
+                assert!(summary.contains("\x1b[32m"), "{summary:?}");
+                assert!(summary.ends_with("13009 frames in total\n"), "{summary:?}");
+                if outcome == "redirected" {
+                    assert_eq!(events.len(), 1);
+                }
+            } else {
+                assert_no_persisted_live_rows(&recorder);
+                let events = recorder.0.lock().unwrap();
+                assert!(!events.iter().any(|event| event.contains("Counted")));
+                if outcome == "cancel" {
+                    assert_eq!(events.last().unwrap(), "\x1b[K");
+                }
+            }
         }
     }
 

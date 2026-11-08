@@ -336,7 +336,9 @@ fn count_normalized_frames(
     input: &Path,
     info: &media::VideoInfo,
     cancel: &CancellationToken,
+    ui: &Ui,
 ) -> Result<u64> {
+    let mut counting = ui.counting();
     let mut child = ManagedChild::spawn(
         decode_command(ffmpeg, input, info.rate),
         "FFmpeg counting",
@@ -358,6 +360,7 @@ fn count_normalized_frames(
             bytes = bytes
                 .checked_add(n as u64)
                 .context("normalized video is too large")?;
+            counting.advance(bytes / bytes_per_frame);
         }
         ensure!(
             bytes.is_multiple_of(bytes_per_frame),
@@ -373,6 +376,7 @@ fn count_normalized_frames(
     match result {
         Ok(count) => {
             finish?;
+            counting.finish();
             Ok(count)
         }
         Err(error) => Err(finish.err().unwrap_or(error)),
@@ -398,9 +402,8 @@ pub(crate) fn process(args: Args, cancel: CancellationToken, ui: &Ui) -> Result<
         .unwrap()
         .to_string_lossy()
         .to_ascii_lowercase();
-    ui.status("Scanning", "video frames for output timing");
     let info = media::probe(&ffprobe, &input, &cancel)?;
-    let input_frames = count_normalized_frames(&ffmpeg, &input, &info, &cancel)?;
+    let input_frames = count_normalized_frames(&ffmpeg, &input, &info, &cancel, ui)?;
     let playback = PlaybackOptions {
         fps_scale: args.fps_scale,
         speed: args.speed,
