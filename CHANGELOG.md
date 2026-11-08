@@ -9,18 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Match Cargo’s bold bright green and bright cyan for completed and in-progress status labels.
-
+- Match Cargo's bold bright green and bright cyan for completed and in-progress status labels.
 - Show Device above Source and Target in verbose output.
-
 - Show a live Counting frame count, followed by a green Counted total, before loading the model.
 
 ### Fixed
 
+- Preserve GIF palette quality when `--video-codec gif` is selected explicitly.
 - Show Loading in the progress color and replace it with green Loaded after the model loads successfully.
 - Show a separate Saving progress bar in the same color as Processing, and keep both Processed and Saved summaries.
 - Remove the throughput multiplier from progress output.
-- Keep live status rows temporary: updates return the cursor to the row start, and Ctrl+C removes the unfinished row while preserving completed messages and the terminal’s default cancellation indicator.
+- Keep live status rows temporary: updates return the cursor to the row start, and Ctrl+C removes the unfinished row while preserving completed messages and the terminal's default cancellation indicator.
 
 ## [0.1.1] - 2026-11-07
 

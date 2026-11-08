@@ -149,6 +149,12 @@ with tempfile.TemporaryDirectory(prefix="rife-smoke-", dir=root / "target") as d
     assert re.search(r"^ +Device .+\n +Source 64x64 @ 29\.97 fps\n +Target 64x64 @ 59\.94 fps$", log, re.M), log
     assert not re.search(r"^ *Encoding|finalizing", log, re.M), log
     assert not re.search(r"Done:|^ *Video |^ *Model |Scenes|…|\.\.\.|Extracting frames:|Encoding video:|\x1b|\n\n", log, re.M), log
+    default_gif = test_root / "default.gif"
+    explicit_gif = test_root / "explicit.gif"
+    for output, codec in [(default_gif, []), (explicit_gif, ["--video-codec", "gif"])]:
+        rife("-i", source, "-m", "rife-v4.26", "-t", "0", "-f", "1", "-s", "0.25",
+             *codec, "-y", output)
+    assert default_gif.read_bytes() == explicit_gif.read_bytes(), "Explicit GIF encoder changed palette quality"
     failed = test_root / "encoder-failure.mp4"
     log = rife("-i", source, "-m", "rife-v4.26", "--video-codec", "rife_missing_encoder", "-y", failed, succeeds=False)
     assert re.search(r"^error:", log, re.M) and "rife_missing_encoder" in log and not failed.exists(), log

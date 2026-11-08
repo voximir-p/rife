@@ -90,6 +90,8 @@ FPS scale and playback speed must be finite, positive numbers. When speed change
 
 Chapter boundaries and MKV subtitle cue timestamps and durations follow the same timing adjustment as audio. Chapter titles, subtitle styles, and MKV attachments are preserved. Changing only FPS leaves source subtitle and chapter timing unchanged. Subtitle streams are currently preserved only in MKV outputs.
 
+GIF output uses a palette generated from the video for better colors, including with `--video-codec gif`. Palette generation can add saving time and affects file size.
+
 Temporary processing files use the OS temporary directory. If rife cannot create a temporary folder there, it uses the output's parent directory. The finished video is transferred to the output location after encoding succeeds, including when that location is on another drive.
 
 Counting shows the number of video frames counted so far, then changes to green `Counted N frames in total` when finished. Loading changes to green Loaded when the model is ready. When interpolation ends, the Processed line reports its elapsed time. A separate Saving progress bar, in the same color as Processing, tracks output encoding with its own timer. The final green Saved line reports the saving time; both summaries remain visible. Live status rows keep the cursor at the start of the row and disappear on Ctrl+C while leaving the terminal’s own cancellation indicator and cursor position unchanged. Redirected logs contain completed messages rather than live progress.

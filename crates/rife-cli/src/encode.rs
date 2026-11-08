@@ -75,6 +75,10 @@ impl Container {
         matches!(self, Self::Gif | Self::Apng | Self::Webp)
     }
 
+    fn uses_gif_palette(self, codec: Option<&str>) -> bool {
+        self == Self::Gif && matches!(codec, None | Some("gif"))
+    }
+
     fn supports_faststart(self) -> bool {
         self == Self::Mp4
     }
@@ -177,7 +181,9 @@ pub(crate) fn select_video_quality(
     cancel: &CancellationToken,
 ) -> anyhow::Result<VideoQuality> {
     let container = Container::from_extension(extension);
-    if container.has_video_only_output() && args.video_codec.is_none() {
+    if (container.has_video_only_output() && args.video_codec.is_none())
+        || container.uses_gif_palette(args.video_codec.as_deref())
+    {
         return Ok(VideoQuality::FormatDefault);
     }
 
@@ -443,7 +449,7 @@ pub(crate) fn command(
             cmd.args(["-f", "ffmetadata", "-i"]).arg(metadata);
         }
     }
-    if container == Container::Gif && args.video_codec.is_none() {
+    if container.uses_gif_palette(args.video_codec.as_deref()) {
         cmd.args([
             "-filter_complex",
             "[0:v]split[a][b];[a]palettegen[p];[b][p]paletteuse[v]",
@@ -588,6 +594,67 @@ mod tests {
                 .windows(2)
                 .any(|pair| pair == ["-lossless", "0"])
         );
+    }
+
+    #[test]
+    fn explicit_gif_encoder_keeps_palette_quality_without_bitrate_queries() {
+        for codec in [None, Some("gif")] {
+            let mut arguments = vec!["rife", "-i", "input.mp4"];
+            if let Some(codec) = codec {
+                arguments.extend(["--video-codec", codec]);
+            }
+            arguments.push("out.gif");
+            let args = Args::try_parse_from(arguments).unwrap();
+            // GIF quality must not depend on source bitrate or launching an
+            // encoder query, even when its encoder is selected explicitly.
+            let quality = select_video_quality(
+                Path::new("missing-ffmpeg"),
+                "gif",
+                &args,
+                None,
+                None,
+                34,
+                136,
+                &CancellationToken::default(),
+            )
+            .unwrap();
+            assert_eq!(quality, VideoQuality::FormatDefault);
+            let cmd = command(
+                Path::new("ffmpeg"),
+                (64, 64),
+                Path::new("input.mp4"),
+                Path::new("out.gif"),
+                Timing {
+                    rate: Rate { num: 30, den: 1 },
+                    video_quality: quality,
+                    speed: 0.25,
+                    duration: 136.0 / 30.0,
+                    preserve_source_timing: false,
+                    source_audio_bitrates: Vec::new(),
+                    chapter_metadata: None,
+                },
+                "gif",
+                &args,
+            );
+            let options = cmd
+                .get_args()
+                .map(|arg| arg.to_string_lossy())
+                .collect::<Vec<_>>();
+            assert!(options.windows(2).any(|pair| pair
+                == [
+                    "-filter_complex",
+                    "[0:v]split[a][b];[a]palettegen[p];[b][p]paletteuse[v]"
+                ]));
+            assert!(options.windows(2).any(|pair| pair == ["-map", "[v]"]));
+            assert!(options.windows(2).any(|pair| pair == ["-loop", "0"]));
+            assert!(
+                !options
+                    .iter()
+                    .any(|arg| matches!(arg.as_ref(), "-crf" | "-b:v"))
+            );
+        }
+        assert!(!Container::Gif.uses_gif_palette(Some("png")));
+        assert!(!Container::Matroska.uses_gif_palette(Some("gif")));
     }
 
     #[test]
