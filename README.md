@@ -92,7 +92,7 @@ Chapter boundaries and MKV subtitle cue timestamps and durations follow the same
 
 Temporary processing files use the OS temporary directory. If rife cannot create a temporary folder there, it uses the output's parent directory. The finished video is transferred to the output location after encoding succeeds, including when that location is on another drive.
 
-When interpolation ends, the Finished line reports its elapsed time. A separate blue Saving progress bar tracks output encoding with its own timer. The final green Saved line reports the saving time; both summaries remain visible.
+When interpolation ends, the Processed line reports its elapsed time. A separate Saving progress bar, in the same color as Processing, tracks output encoding with its own timer. The final green Saved line reports the saving time; both summaries remain visible.
 
 ## Models
 

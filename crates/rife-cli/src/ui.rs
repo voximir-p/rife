@@ -317,7 +317,7 @@ impl Progress {
 
     pub(crate) fn saving(&mut self, frames: u64) {
         let hidden = self.bar.is_hidden();
-        let message = finished(frames, self.bar.elapsed(), self.palette);
+        let message = processed(frames, self.bar.elapsed(), self.palette);
         persist_line(&self.bar, self.term.as_ref(), &self.output, &message);
         self.stage = Stage::Saving;
         self.bar = ProgressBar::with_draw_target(
@@ -411,10 +411,10 @@ fn elapsed_time(elapsed: Duration) -> String {
     }
 }
 
-fn finished(frames: u64, elapsed: Duration, palette: Palette) -> String {
+fn processed(frames: u64, elapsed: Duration, palette: Palette) -> String {
     format!(
-        "{} interpolating {frames} frames in {}",
-        palette.label("Finished"),
+        "{} {frames} frames in {}",
+        palette.label("Processed"),
         elapsed_time(elapsed)
     )
 }
@@ -467,15 +467,11 @@ fn render_status(
         Some(total) => format!("{frames}/{total}"),
         None => frames.to_string(),
     };
-    let label = if matches!(stage, Stage::Saving) {
-        style(padded("Saving"))
-            .blue()
-            .bold()
-            .force_styling(palette.enabled)
-            .to_string()
+    let label = palette.value(padded(if matches!(stage, Stage::Saving) {
+        "Saving"
     } else {
-        palette.value(padded(PROGRESS_LABEL))
-    };
+        PROGRESS_LABEL
+    }));
     let mut percent = String::new();
     let mut eta = String::new();
     if let Some(total) = total {
@@ -645,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn saving_has_blue_progress_and_saved_has_a_green_summary() {
+    fn saving_matches_processing_color_and_saved_has_a_green_summary() {
         let line = render_status(
             3,
             Some(272),
@@ -669,8 +665,8 @@ mod tests {
             Palette { enabled: true },
             Stage::Saving,
         );
-        assert!(colored.contains("\x1b[34m"), "{colored:?}");
-        assert!(!colored.contains("\x1b[36m"), "{colored:?}");
+        assert!(colored.contains("\x1b[36m"), "{colored:?}");
+        assert!(!colored.contains("\x1b[34m"), "{colored:?}");
         let summary = saved(136, Duration::from_millis(1940), Palette { enabled: true });
         assert!(summary.contains("\x1b[32m"), "{summary:?}");
         assert!(
@@ -720,7 +716,7 @@ mod tests {
         assert_eq!(
             events
                 .iter()
-                .filter(|event| event.contains("Finished") && event.ends_with('\n'))
+                .filter(|event| event.contains("Processed") && event.ends_with('\n'))
                 .count(),
             1
         );
@@ -728,7 +724,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_saving_keeps_both_finished_lines_without_duplicates() {
+    fn completed_saving_keeps_both_summaries_without_duplicates() {
         let recorder = RecordingTerm::default();
         let mut progress = Progress {
             bar: ProgressBar::with_draw_target(
@@ -753,7 +749,7 @@ mod tests {
         assert_eq!(
             events
                 .iter()
-                .filter(|event| event.contains("Finished") && event.ends_with('\n'))
+                .filter(|event| event.contains("Processed") && event.ends_with('\n'))
                 .count(),
             1
         );
@@ -788,7 +784,7 @@ mod tests {
             assert!(
                 !events
                     .iter()
-                    .any(|event| event.contains("Finished") || event.contains("Cancelling"))
+                    .any(|event| event.contains("Processed") || event.contains("Cancelling"))
             );
         }
     }
@@ -898,15 +894,15 @@ mod tests {
     #[test]
     fn completion_is_aligned_with_green_label_and_default_detail() {
         let palette = Palette { enabled: false };
-        let message = finished(424, Duration::from_millis(120), palette);
+        let message = processed(424, Duration::from_millis(120), palette);
         assert_eq!(
             message,
-            format!("{} interpolating 424 frames in 0.12s", padded("Finished"))
+            format!("{} 424 frames in 0.12s", padded("Processed"))
         );
-        let colored = finished(424, Duration::from_millis(120), Palette { enabled: true });
+        let colored = processed(424, Duration::from_millis(120), Palette { enabled: true });
         assert!(colored.contains("\x1b[32m"), "{colored:?}");
         assert!(
-            colored.ends_with("\x1b[0m interpolating 424 frames in 0.12s"),
+            colored.ends_with("\x1b[0m 424 frames in 0.12s"),
             "{colored:?}"
         );
         for (milliseconds, expected) in [
@@ -920,11 +916,8 @@ mod tests {
             (3_600_000, "60m 0s"),
         ] {
             assert_eq!(
-                finished(12820, Duration::from_millis(milliseconds), palette),
-                format!(
-                    "{} interpolating 12820 frames in {expected}",
-                    padded("Finished")
-                )
+                processed(12820, Duration::from_millis(milliseconds), palette),
+                format!("{} 12820 frames in {expected}", padded("Processed"))
             );
         }
         for label in ["Source", "Target", "Device", "Loading"] {

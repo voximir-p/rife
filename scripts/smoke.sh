@@ -124,7 +124,7 @@ with tempfile.TemporaryDirectory(prefix="rife-smoke-", dir=root / "target") as d
         lines = log.splitlines()
         assert len(lines) == 4 and re.fullmatch(r" +Scanning video frames for output timing", lines[0]), log
         assert re.fullmatch(r" +Processing video", lines[1]), log
-        assert re.fullmatch(r"    Finished interpolating 12 frames in (?:[0-9]+\.[0-9]{2}s|[0-9]+m [0-9]+s)", lines[2]), log
+        assert re.fullmatch(r"   Processed 12 frames in (?:[0-9]+\.[0-9]{2}s|[0-9]+m [0-9]+s)", lines[2]), log
         assert re.fullmatch(r" +Saved 12 frames in (?:[0-9]+\.[0-9]{2}s|[0-9]+m [0-9]+s)", lines[3]), log
         assert not re.search(r"Done:|~|\x1b|\| [0-9]+\.[0-9]+x", log), log
         result = hashes(output)

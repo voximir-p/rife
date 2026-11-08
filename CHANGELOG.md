@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Show a separate Saving progress bar after interpolation and retain both the interpolation and save summaries.
+- Show a separate Saving progress bar in the same color as Processing, and keep both Processed and Saved summaries.
 - Remove the throughput multiplier from progress output.
 - Avoid duplicated or space-padded status lines on Ctrl+C and finish on a new terminal line.
 
