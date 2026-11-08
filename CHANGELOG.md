@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Match Cargo’s bold bright green and bright cyan for completed and in-progress status labels.
+
 - Show Device above Source and Target in verbose output.
 
 - Show a live Counting frame count, followed by a green Counted total, before loading the model.

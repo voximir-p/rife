@@ -1,6 +1,7 @@
 // Copyright (C) 2026 Voximir.
 // SPDX-License-Identifier: GPL-3.0-only
 
+use clap::builder::styling::AnsiColor;
 use console::{Term, measure_text_width, style, truncate_str};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
 use std::{
@@ -152,15 +153,20 @@ impl Palette {
     }
 
     fn label(self, value: impl fmt::Display) -> String {
-        style(padded(value))
-            .green()
-            .bold()
-            .force_styling(self.enabled)
-            .to_string()
+        self.paint(padded(value), AnsiColor::BrightGreen)
     }
 
     fn value(self, value: impl fmt::Display) -> String {
-        style(value).cyan().force_styling(self.enabled).to_string()
+        self.paint(value, AnsiColor::BrightCyan)
+    }
+
+    fn paint(self, value: impl fmt::Display, color: AnsiColor) -> String {
+        if self.enabled {
+            let style = color.on_default().bold();
+            format!("{style}{value}{style:#}")
+        } else {
+            value.to_string()
+        }
     }
 }
 
@@ -774,10 +780,10 @@ mod tests {
             Palette { enabled: true },
             Stage::Saving,
         );
-        assert!(colored.contains("\x1b[36m"), "{colored:?}");
+        assert!(colored.contains("\x1b[96m"), "{colored:?}");
         assert!(!colored.contains("\x1b[34m"), "{colored:?}");
         let summary = saved(136, Duration::from_millis(1940), Palette { enabled: true });
-        assert!(summary.contains("\x1b[32m"), "{summary:?}");
+        assert!(summary.contains("\x1b[92m"), "{summary:?}");
         assert!(
             summary.ends_with("\x1b[0m 136 frames in 1.94s"),
             "{summary:?}"
@@ -925,8 +931,8 @@ mod tests {
             let detail = format!("model `{}`", crate::Model::default());
             let line = format!("{} {detail}", palette.value(padded("Loading")));
             let loaded_line = format!("{} {detail}", palette.label("Loaded"));
-            assert!(line.contains("\x1b[36m"));
-            assert!(loaded_line.contains("\x1b[32m"));
+            assert!(line.contains("\x1b[96m"));
+            assert!(loaded_line.contains("\x1b[92m"));
             let mut loading = Activity {
                 bar,
                 kind: ActivityKind::Loading(detail),
@@ -993,7 +999,7 @@ mod tests {
                     .iter()
                     .find(|event| event.contains("Counting"))
                     .unwrap();
-                assert!(line.contains("\x1b[36m"), "{events:?}");
+                assert!(line.contains("\x1b[96m"), "{events:?}");
                 assert!(line.ends_with("1651 frames"), "{events:?}");
                 assert_eq!(events.last().unwrap(), "\r");
             }
@@ -1015,7 +1021,7 @@ mod tests {
                 recorder.assert_last_line_retained("Counted");
                 let events = recorder.0.lock().unwrap();
                 let summary = events.last().unwrap();
-                assert!(summary.contains("\x1b[32m"), "{summary:?}");
+                assert!(summary.contains("\x1b[92m"), "{summary:?}");
                 assert!(summary.ends_with("13009 frames in total\n"), "{summary:?}");
                 if outcome == "redirected" {
                     assert_eq!(events.len(), 1);
@@ -1074,7 +1080,7 @@ mod tests {
         );
         let colored = status(300, Some(600), 120, true);
         let label = padded(PROGRESS_LABEL);
-        let colored_label = format!("\x1b[36m{label}\x1b[0m");
+        let colored_label = format!("\x1b[1m\x1b[96m{label}\x1b[0m");
         assert!(colored.contains(&colored_label), "{colored:?}");
         let remainder = colored.replace(&colored_label, &label);
         assert!(!remainder.contains("\x1b["), "{colored:?}");
@@ -1120,7 +1126,7 @@ mod tests {
             format!("{} 424 frames in 0.12s", padded("Processed"))
         );
         let colored = processed(424, Duration::from_millis(120), Palette { enabled: true });
-        assert!(colored.contains("\x1b[32m"), "{colored:?}");
+        assert!(colored.contains("\x1b[92m"), "{colored:?}");
         assert!(
             colored.ends_with("\x1b[0m 424 frames in 0.12s"),
             "{colored:?}"
