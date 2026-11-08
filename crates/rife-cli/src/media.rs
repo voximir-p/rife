@@ -269,8 +269,7 @@ fn find_source_crf(
 
 fn find_crf_in_tags(tags: &HashMap<String, String>) -> Option<String> {
     for (key, value) in tags {
-        if key.eq_ignore_ascii_case("crf") && value.parse::<f64>().is_ok_and(|number| number >= 0.0)
-        {
+        if key.eq_ignore_ascii_case("crf") && crate::encode::is_valid_crf(value) {
             return Some(value.clone());
         }
     }
@@ -304,7 +303,7 @@ fn extract_crf(metadata: &str) -> Option<String> {
             continue;
         }
         let candidate = &rest[..length];
-        if candidate.parse::<f64>().is_ok_and(|number| number >= 0.0) {
+        if crate::encode::is_valid_crf(candidate) {
             return Some(candidate.to_owned());
         }
     }
@@ -338,9 +337,31 @@ fn packet_stats(
             "compact=p=0:nk=0",
         ])
         .arg(input);
-    let output = crate::process::capture_output(command, cancel)?;
+    crate::process::read_output(command, "FFprobe", cancel, |reader| {
+        read_packet_stats(reader, cancel)
+    })
+}
+
+fn read_packet_stats(
+    mut reader: impl std::io::BufRead,
+    cancel: &CancellationToken,
+) -> Result<HashMap<usize, PacketStats>> {
     let mut stats = HashMap::<usize, PacketStats>::new();
-    for line in String::from_utf8_lossy(&output).lines() {
+    let mut line = Vec::new();
+    loop {
+        cancel.check()?;
+        line.clear();
+        if reader
+            .read_until(b'\n', &mut line)
+            .context("could not read FFprobe packets")?
+            == 0
+        {
+            break;
+        }
+        // Keep only one packet line in memory and preserve lossy decoding of
+        // incidental non-UTF-8 fields from the previous whole-output parser.
+        let line = String::from_utf8_lossy(&line);
+        let line = line.trim_end_matches(['\r', '\n']);
         let mut index = None;
         let mut size = None;
         let mut pts = None;
@@ -435,6 +456,64 @@ mod tests {
     }
 
     #[test]
+    fn source_crf_ignores_nonfinite_values_and_falls_back_to_valid_metadata() {
+        for value in ["inf", "Infinity", "NaN", "1e309"] {
+            let tags = HashMap::from([
+                ("crf".to_owned(), value.to_owned()),
+                ("encoder".to_owned(), format!("libx264 crf={value}")),
+            ]);
+            assert!(find_crf_in_tags(&tags).is_none(), "accepted {value}");
+            let format = HashMap::from([("crf".to_owned(), "19.5".to_owned())]);
+            assert_eq!(
+                find_source_crf(&tags, Some(&format)).as_deref(),
+                Some("19.5")
+            );
+        }
+    }
+
+    #[test]
+    fn packet_statistics_stream_across_short_reads_and_multiple_streams() {
+        let packets = b"stream_index=0|pts_time=2|duration_time=0.5|size=100\r\nstream_index=1|pts_time=0|duration_time=1|size=30\nstream_index=0|pts_time=1|duration_time=0.5|size=200|ignored=\xff\nstream_index=0|pts_time=NaN|duration_time=1|size=50\nstream_index=0|size=bad\nsize=100\nstream_index=1|pts_time=1|duration_time=1|size=40";
+        let reader = std::io::BufReader::with_capacity(1, packets.as_slice());
+        let stats = read_packet_stats(reader, &CancellationToken::default()).unwrap();
+        assert_eq!(stats.len(), 2);
+        assert_eq!(stats[&0].bytes, 350);
+        assert_eq!(stats[&0].start_time, Some(1.0));
+        assert_eq!(stats[&0].end_time, Some(2.5));
+        assert_eq!(bitrate_from_packets(&stats[&0], None, None), Some(1867));
+        assert_eq!(stats[&1].bytes, 70);
+        assert_eq!(
+            bitrate_from_packets(&stats[&1], Some("1"), Some("3")),
+            Some(560)
+        );
+    }
+
+    #[test]
+    fn packet_statistics_report_overflow_read_errors_and_cancellation() {
+        let overflow = format!("stream_index=0|size={}\nstream_index=0|size=1\n", u64::MAX);
+        assert!(read_packet_stats(overflow.as_bytes(), &CancellationToken::default()).is_err());
+        struct BrokenReader;
+        impl std::io::Read for BrokenReader {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("packet read failure"))
+            }
+        }
+        let reader = std::io::BufReader::new(BrokenReader);
+        assert!(
+            format!(
+                "{:#}",
+                read_packet_stats(reader, &CancellationToken::default())
+                    .err()
+                    .unwrap()
+            )
+            .contains("packet read failure")
+        );
+        let cancel = CancellationToken::default();
+        cancel.cancel();
+        assert!(read_packet_stats(&b""[..], &cancel).is_err());
+    }
+
+    #[test]
     fn accounts_for_ffmpeg_autorotation() {
         assert_eq!(display_dimensions(1920, 1080, Some(-90.0)), (1080, 1920));
         assert_eq!(display_dimensions(1920, 1080, Some(270.0)), (1080, 1920));
@@ -462,12 +541,20 @@ mod tests {
         assert_eq!(
             Rate {
                 num: u64::MAX,
-                den: 1
+                den: u64::MAX
             }
             .scaled(2, 2)
             .unwrap()
-            .num,
-            u64::MAX
+            .to_string(),
+            "1/1"
+        );
+        assert!(
+            Rate {
+                num: u64::MAX,
+                den: 1
+            }
+            .scaled(2, 2)
+            .is_err()
         );
         assert!(
             Rate {

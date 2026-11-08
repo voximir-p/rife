@@ -232,18 +232,33 @@ pub(crate) fn capture_output(command: Command, cancel: &CancellationToken) -> Re
 }
 
 pub(crate) fn capture_output_named(
-    mut command: Command,
+    command: Command,
     label: &'static str,
     cancel: &CancellationToken,
 ) -> Result<Vec<u8>> {
+    read_output(command, label, cancel, |reader| {
+        let mut output = Vec::new();
+        reader
+            .read_to_end(&mut output)
+            .with_context(|| format!("could not read {label} output"))?;
+        Ok(output)
+    })
+}
+
+pub(crate) fn read_output<T>(
+    mut command: Command,
+    label: &'static str,
+    cancel: &CancellationToken,
+    read: impl FnOnce(&mut dyn BufRead) -> Result<T>,
+) -> Result<T> {
     command.stdin(Stdio::null()).stdout(Stdio::piped());
     let mut child = ManagedChild::spawn(command, label, cancel.clone())?;
-    let mut output = Vec::new();
-    let read = child.take_stdout().read_to_end(&mut output);
+    // On a read/parser error, Drop closes the pipe and reaps the child rather
+    // than waiting for a writer whose output is no longer being consumed.
+    let output = read(&mut BufReader::new(child.take_stdout()))?;
     let result = child.finish();
     cancel.check()?;
     result?;
-    read.context("could not read FFprobe output")?;
     Ok(output)
 }
 
@@ -413,10 +428,12 @@ pub(crate) fn process(args: Args, cancel: CancellationToken, ui: &Ui) -> Result<
         &ffmpeg,
         &extension,
         &args,
-        info.source_crf.as_deref(),
-        info.video_bitrate,
-        input_frames,
-        schedule.output_frames(),
+        encode::VideoQualityInput {
+            source_crf: info.source_crf.as_deref(),
+            source_bitrate: info.video_bitrate,
+            input_frames,
+            output_frames: schedule.output_frames(),
+        },
         &cancel,
     )?;
     let (scale_num, scale_den) = playback.fps_ratio()?;
@@ -564,6 +581,64 @@ pub(crate) fn process(args: Args, cancel: CancellationToken, ui: &Ui) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn stdout_reader_child() {
+        if env::var_os("RIFE_TEST_STDOUT_CHILD").is_none() {
+            return;
+        }
+        println!("RIFE_STDOUT_READY");
+        std::io::stdout().flush().unwrap();
+        loop {
+            thread::sleep(std::time::Duration::from_secs(1));
+        }
+    }
+
+    #[test]
+    fn streaming_reader_reaps_children_on_parse_error_and_cancellation() {
+        for cancelled in [false, true] {
+            let mut command = Command::new(env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "process::tests::stdout_reader_child",
+                    "--nocapture",
+                ])
+                .env("RIFE_TEST_STDOUT_CHILD", "1");
+            let cancel = CancellationToken::default();
+            let started = std::time::Instant::now();
+            let result: Result<()> = read_output(command, "test child", &cancel, |reader| {
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    ensure!(
+                        reader.read_line(&mut line)? > 0,
+                        "child exited before ready"
+                    );
+                    if line.contains("RIFE_STDOUT_READY") {
+                        break;
+                    }
+                }
+                if cancelled {
+                    cancel.cancel();
+                    std::io::copy(reader, &mut std::io::sink())?;
+                    Ok(())
+                } else {
+                    Err(anyhow!("packet parser failed"))
+                }
+            });
+            let message = result.unwrap_err().to_string();
+            assert_eq!(
+                message,
+                if cancelled {
+                    "cancelled"
+                } else {
+                    "packet parser failed"
+                }
+            );
+            assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        }
+    }
+
     #[test]
     fn encoder_progress_tracks_reported_frames_monotonically() {
         let frames = AtomicU64::new(0);

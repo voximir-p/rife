@@ -5,6 +5,7 @@ use crate::{Args, config, media::Rate};
 use anyhow::Context;
 use rife_core::CancellationToken;
 use std::{
+    borrow::Cow,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -15,11 +16,16 @@ const AAC_BITRATE_SCALE_DEN: u64 = 100;
 const PAD_EVEN: &str = "pad=ceil(iw/2)*2:ceil(ih/2)*2";
 const RETIMING_EPSILON: f64 = 1e-12;
 pub(crate) const DEFAULT_CRF: &str = "20";
-const INVALID_CRF: &str = "CRF must be a number greater than or equal to 0";
+const INVALID_CRF: &str = "CRF must be a finite number greater than or equal to 0";
+
+pub(crate) fn is_valid_crf(value: &str) -> bool {
+    value
+        .parse::<f64>()
+        .is_ok_and(|crf| crf.is_finite() && crf >= 0.0)
+}
 
 pub(crate) fn parse_crf(value: &str) -> std::result::Result<String, String> {
-    let crf = value.parse::<f64>().map_err(|_| INVALID_CRF.to_owned())?;
-    if crf >= 0.0 {
+    if is_valid_crf(value) {
         Ok(value.to_owned())
     } else {
         Err(INVALID_CRF.to_owned())
@@ -170,14 +176,18 @@ fn append_video_options(
     }
 }
 
+pub(crate) struct VideoQualityInput<'a> {
+    pub source_crf: Option<&'a str>,
+    pub source_bitrate: Option<u64>,
+    pub input_frames: u64,
+    pub output_frames: u64,
+}
+
 pub(crate) fn select_video_quality(
     ffmpeg: &Path,
     extension: &str,
     args: &Args,
-    source_crf: Option<&str>,
-    source_bitrate: Option<u64>,
-    input_frames: u64,
-    output_frames: u64,
+    input: VideoQualityInput<'_>,
     cancel: &CancellationToken,
 ) -> anyhow::Result<VideoQuality> {
     let container = Container::from_extension(extension);
@@ -190,25 +200,28 @@ pub(crate) fn select_video_quality(
     let crf = args
         .crf
         .as_deref()
-        .or(source_crf)
+        .or(input.source_crf)
         .unwrap_or(DEFAULT_CRF)
         .to_owned();
-    let codec = args
+    let codec = match args
         .video_codec
         .as_deref()
         .or(VideoPreset::for_container(container).codec)
-        .map(str::to_owned)
-        .or(query_muxer_video_codec(ffmpeg, extension, cancel)?);
-
-    if let Some(codec) = codec
-        && encoder_supports_crf(ffmpeg, &codec, cancel)? == Some(false)
     {
-        let source_bitrate = source_bitrate
+        Some(codec) => Some(Cow::Borrowed(codec)),
+        None => query_muxer_video_codec(ffmpeg, extension, cancel)?.map(Cow::Owned),
+    };
+
+    if let Some(codec) = codec.as_deref()
+        && encoder_supports_crf(ffmpeg, codec, cancel)? == Some(false)
+    {
+        let source_bitrate = input
+            .source_bitrate
             .context("could not determine the source video bitrate for the encoder fallback")?;
         return Ok(VideoQuality::Bitrate(scale_fallback_bitrate(
             source_bitrate,
-            input_frames,
-            output_frames,
+            input.input_frames,
+            input.output_frames,
         )?));
     }
     Ok(VideoQuality::Crf(crf))
@@ -611,10 +624,12 @@ mod tests {
                 Path::new("missing-ffmpeg"),
                 "gif",
                 &args,
-                None,
-                None,
-                34,
-                136,
+                VideoQualityInput {
+                    source_crf: None,
+                    source_bitrate: None,
+                    input_frames: 34,
+                    output_frames: 136,
+                },
                 &CancellationToken::default(),
             )
             .unwrap();
