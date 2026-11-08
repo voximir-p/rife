@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Show Loading in the progress color and replace it with green Loaded after the model loads successfully.
+
 - Show a separate Saving progress bar in the same color as Processing, and keep both Processed and Saved summaries.
 - Remove the throughput multiplier from progress output.
 - Avoid duplicated or space-padded status lines on Ctrl+C and finish on a new terminal line.

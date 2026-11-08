@@ -187,10 +187,16 @@ impl Ui {
         );
     }
 
-    pub(crate) fn activity(&self, label: &str, detail: &str) -> Loading {
+    pub(crate) fn loading(&self, detail: &str) -> Loading {
+        let label = "Loading";
         let bar = ProgressBar::with_draw_target(None, draw_target(&self.term));
         if bar.is_hidden() {
-            self.info(label, detail);
+            if self.verbose {
+                self.output.write_line(
+                    &self.term,
+                    &format!("{} {detail}", self.palette.value(padded(label))),
+                );
+            }
         } else {
             let (label, detail, term, palette) = (
                 label.to_owned(),
@@ -205,7 +211,7 @@ impl Ui {
                         "activity",
                         move |_: &ProgressState, output: &mut dyn fmt::Write| {
                             let width = usize::from(term.size().1).saturating_sub(3);
-                            let line = format!("{} {detail}", palette.label(&label));
+                            let line = format!("{} {detail}", palette.value(padded(&label)));
                             let line = truncate_str(&line, width, "");
                             let _ = output.write_str(&line);
                         },
@@ -216,8 +222,10 @@ impl Ui {
         }
         Loading {
             bar,
-            keep: label == "Loading",
-            line: format!("{} {detail}", self.palette.label(label)),
+            line: format!("{} {detail}", self.palette.value(padded(label))),
+            loaded_line: format!("{} {detail}", self.palette.label("Loaded")),
+            show_when_hidden: self.verbose,
+            finished: false,
             term: Arc::new(self.term.clone()),
             output: self.output.clone(),
         }
@@ -250,15 +258,40 @@ impl Ui {
 
 pub(crate) struct Loading {
     bar: ProgressBar,
-    keep: bool,
     line: String,
+    loaded_line: String,
+    show_when_hidden: bool,
+    finished: bool,
     term: Arc<dyn indicatif::TermLike>,
     output: Arc<OutputState>,
 }
 
+impl Loading {
+    pub(crate) fn finish(&mut self) {
+        if self.finished {
+            return;
+        }
+        if !self.bar.is_hidden() || self.show_when_hidden {
+            persist_line(
+                &self.bar,
+                self.term.as_ref(),
+                &self.output,
+                &self.loaded_line,
+            );
+        } else {
+            self.bar.disable_steady_tick();
+            self.bar.finish_and_clear();
+        }
+        self.finished = true;
+    }
+}
+
 impl Drop for Loading {
     fn drop(&mut self) {
-        if self.keep && !self.bar.is_hidden() {
+        if self.finished {
+            return;
+        }
+        if !self.bar.is_hidden() {
             persist_line(&self.bar, self.term.as_ref(), &self.output, &self.line);
         } else {
             self.bar.disable_steady_tick();
@@ -790,25 +823,47 @@ mod tests {
     }
 
     #[test]
-    fn model_loading_line_remains_after_loading_finishes() {
-        let recorder = RecordingTerm::default();
-        let bar = ProgressBar::with_draw_target(
-            None,
-            ProgressDrawTarget::term_like(Box::new(UnpaddedTerm(Arc::new(recorder.clone())))),
-        );
-        bar.set_style(ProgressStyle::with_template("{msg}").unwrap());
-        let detail = format!("Loading model `{}`", crate::Model::default());
-        let line = format!("{} model `{}`", padded("Loading"), crate::Model::default());
-        bar.set_message(line.clone());
-        let loading = Loading {
-            bar,
-            keep: true,
-            line,
-            term: Arc::new(recorder.clone()),
-            output: Arc::new(OutputState::default()),
-        };
-        drop(loading);
-        recorder.assert_last_line_retained(&detail);
+    fn model_loading_keeps_one_line_and_only_reports_loaded_on_success() {
+        for success in [false, true] {
+            let recorder = RecordingTerm::default();
+            let bar = ProgressBar::with_draw_target(
+                None,
+                ProgressDrawTarget::term_like(Box::new(UnpaddedTerm(Arc::new(recorder.clone())))),
+            );
+            bar.set_style(ProgressStyle::with_template("{msg}").unwrap());
+            let palette = Palette { enabled: true };
+            let detail = format!("model `{}`", crate::Model::default());
+            let line = format!("{} {detail}", palette.value(padded("Loading")));
+            let loaded_line = format!("{} {detail}", palette.label("Loaded"));
+            assert!(line.contains("\x1b[36m"));
+            assert!(loaded_line.contains("\x1b[32m"));
+            bar.set_message(line.clone());
+            let mut loading = Loading {
+                bar,
+                line,
+                loaded_line,
+                show_when_hidden: false,
+                finished: false,
+                term: Arc::new(recorder.clone()),
+                output: Arc::new(OutputState::default()),
+            };
+            if success {
+                loading.finish();
+                loading.finish();
+            } else {
+                loading.output.interrupted.store(true, Ordering::Relaxed);
+            }
+            drop(loading);
+            recorder.assert_last_line_retained(if success { "Loaded" } else { "Loading" });
+            let events = recorder.0.lock().unwrap();
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| event.contains("Loaded") && event.ends_with('\n'))
+                    .count(),
+                usize::from(success)
+            );
+        }
     }
 
     fn status(frames: u64, total: Option<u64>, width: usize, color: bool) -> String {

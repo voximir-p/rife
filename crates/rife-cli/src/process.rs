@@ -437,8 +437,11 @@ pub(crate) fn process(args: Args, cancel: CancellationToken, ui: &Ui) -> Result<
     }
     cancel.check()?;
     let engine = {
-        let _loading = ui.activity("Loading", &format!("model `{}`", args.model));
-        Engine::new_with_cancellation(&model, args.engine_options(), &cancel)?
+        let mut loading = ui.loading(&format!("model `{}`", args.model));
+        let engine = Engine::new_with_cancellation(&model, args.engine_options(), &cancel)?;
+        cancel.check()?;
+        loading.finish();
+        engine
     };
     cancel.check()?;
     for (label, rate) in [("Source", info.rate), ("Target", output_rate)] {
