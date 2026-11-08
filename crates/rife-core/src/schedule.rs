@@ -230,7 +230,12 @@ mod tests {
         }
         assert!(FrameSchedule::for_count(0, 1).is_err());
         assert!(FrameSchedule::for_count(1, 0).is_err());
-        assert!(FrameSchedule::default_count(u64::MAX).is_err());
+        assert_eq!(
+            FrameSchedule::default_count(u64::MAX)
+                .unwrap()
+                .output_frames(),
+            u64::MAX
+        );
         assert_eq!(FrameSchedule::for_step(3, 0.3).unwrap().output_frames, 10);
         assert_eq!(
             FrameSchedule::for_step(9_007_199_254_740_993, 0.5)
@@ -280,6 +285,21 @@ mod tests {
                 .is_err()
             );
         }
-        assert!(FrameSchedule::for_playback(u64::MAX, PlaybackOptions::default()).is_err());
+        assert_eq!(
+            FrameSchedule::for_playback(u64::MAX, PlaybackOptions::default())
+                .unwrap()
+                .output_frames(),
+            u64::MAX
+        );
+        assert!(
+            FrameSchedule::for_playback(
+                u64::MAX,
+                PlaybackOptions {
+                    fps_scale: 2.0,
+                    speed: 1.0
+                }
+            )
+            .is_err()
+        );
     }
 }

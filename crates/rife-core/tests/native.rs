@@ -101,6 +101,9 @@ fn cpu_inference_cancels_between_layers_and_model_remains_usable() {
             [Ok(first), Ok(second)],
             StreamOptions {
                 threshold: 1.0,
+                // Explicitly request interpolation: the default now copies
+                // the input frame grid and can finish before cancellation.
+                schedule: Some(rife_core::FrameSchedule::for_count(2, 4).unwrap()),
                 ..StreamOptions::default()
             },
             cancel,

@@ -470,7 +470,6 @@ mod tests {
                     threshold,
                     schedule: Some(double_rate_schedule(20)),
                     buffer_capacity: Some(1),
-                    ..StreamOptions::default()
                 },
                 &CancellationToken::default(),
                 |_| Ok(()),
@@ -519,7 +518,6 @@ mod tests {
                 threshold: 1.0,
                 schedule: Some(double_rate_schedule(5)),
                 buffer_capacity: Some(2),
-                ..StreamOptions::default()
             },
             &token,
             |_| Ok(()),
