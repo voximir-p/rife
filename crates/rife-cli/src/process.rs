@@ -3,6 +3,7 @@
 
 use crate::{
     Args, chapters, config, encode,
+    images::Sequence,
     media::{self, Rate},
     output_lock::OutputLock,
     paths,
@@ -30,7 +31,7 @@ struct ProcessExit {
 }
 
 #[derive(Debug)]
-struct ProcessFailure {
+pub(crate) struct ProcessFailure {
     label: &'static str,
     status: ExitStatus,
     diagnostics: String,
@@ -49,6 +50,15 @@ impl fmt::Display for ProcessFailure {
 
 impl std::error::Error for ProcessFailure {}
 
+impl ProcessFailure {
+    pub(crate) fn report(&self) -> worker::BackendReport {
+        worker::BackendReport {
+            reason: format!("{} failed ({})", self.label, self.status),
+            details: self.diagnostics.lines().map(str::to_owned).collect(),
+        }
+    }
+}
+
 fn attach_cleanup_failure(error: anyhow::Error, diagnostic: anyhow::Error) -> anyhow::Error {
     // A native failure stops the pipeline and closes/kills both FFmpeg pipes.
     // Their shutdown status and buffered warnings are secondary to that failure.
@@ -60,12 +70,18 @@ fn attach_cleanup_failure(error: anyhow::Error, diagnostic: anyhow::Error) -> an
         return error;
     }
 
-    if diagnostic
-        .downcast_ref::<ProcessFailure>()
-        .is_some_and(|failure| failure.terminated_on_cancel && failure.diagnostics.is_empty())
-    {
-        // An otherwise silent child killed during cleanup adds no diagnosis.
-        return error;
+    if let Some(failure) = diagnostic.downcast_ref::<ProcessFailure>() {
+        let original = error.downcast_ref::<ProcessFailure>();
+        if original.is_some_and(|failure| !failure.terminated_on_cancel)
+            || (failure.terminated_on_cancel
+                && (failure.diagnostics.is_empty() || original.is_some()))
+        {
+            // Keep an independently failed backend ahead of children killed
+            // during cleanup, even when those children logged ordinary warnings.
+            return error;
+        }
+        // Its actual backend diagnosis replaces a secondary broken-pipe error.
+        return diagnostic;
     }
     error.context(diagnostic)
 }
@@ -349,11 +365,19 @@ pub(crate) fn process(args: Args, cancel: CancellationToken, ui: &Ui) -> Result<
         .parent()
         .context("executable has no parent directory")?;
     let (input, output, parent) = paths::resolve_paths(&args)?;
-    let _output_lock = OutputLock::acquire(&output, args.overwrite, &cancel, || {
+    let sequence = Sequence::parse(&output)?;
+    let lock_path = if sequence.is_some() {
+        Sequence::lock_path(&parent)
+    } else {
+        output.clone()
+    };
+    let _output_lock = OutputLock::acquire(&lock_path, args.overwrite, &cancel, || {
         ui.status("Waiting", format_args!("for locked `{}`", output.display()));
     })?;
     // The previous writer may have committed a file while this run was waiting.
-    paths::validate_output(&input, &output, args.overwrite)?;
+    if sequence.is_none() {
+        paths::validate_output(&input, &output, args.overwrite)?;
+    }
     let ffmpeg = paths::tool_path(root, "ffmpeg")?;
     let ffprobe = paths::tool_path(root, "ffprobe")?;
     let model = paths::find_model(root, &args.model)?;
@@ -362,35 +386,60 @@ pub(crate) fn process(args: Args, cancel: CancellationToken, ui: &Ui) -> Result<
         .unwrap()
         .to_string_lossy()
         .to_ascii_lowercase();
-    let info = media::probe(&ffprobe, &input, &cancel)?;
-    let input_frames = count_normalized_frames(&ffmpeg, &input, &info, &cancel, ui)?;
+    let info = media::probe(&ffprobe, &input, &cancel, sequence.is_none())?;
     let playback = PlaybackOptions {
         fps_scale: args.fps_scale,
         speed: args.speed,
     };
-    let schedule = FrameSchedule::for_playback(input_frames, playback)?;
-    let video_quality = encode::select_video_quality(
-        &ffmpeg,
-        &extension,
-        &args,
-        encode::VideoQualityInput {
-            source_crf: info.source_crf.as_deref(),
-            source_bitrate: info.video_bitrate,
-            input_frames,
-            output_frames: schedule.output_frames(),
-        },
-        &cancel,
-    )?;
     let (scale_num, scale_den) = playback.fps_ratio()?;
     let output_rate = info.rate.scaled(scale_num, scale_den)?;
+    for (label, rate) in [("Source", info.rate), ("Target", output_rate)] {
+        ui.info(
+            label,
+            format_args!(
+                "{}x{} @ {:.2} fps",
+                info.width,
+                info.height,
+                rate.num as f64 / rate.den as f64
+            ),
+        );
+    }
+    let input_frames = count_normalized_frames(&ffmpeg, &input, &info, &cancel, ui)?;
+    let schedule = FrameSchedule::for_playback(input_frames, playback)?;
+    if let Some(sequence) = &sequence {
+        sequence.validate(
+            &parent,
+            &input,
+            schedule.output_frames(),
+            args.overwrite,
+            &cancel,
+        )?;
+    }
+    let video_quality = if sequence.is_some() {
+        encode::VideoQuality::FormatDefault
+    } else {
+        encode::select_video_quality(
+            &ffmpeg,
+            &extension,
+            &args,
+            encode::VideoQualityInput {
+                source_crf: info.source_crf.as_deref(),
+                source_bitrate: info.video_bitrate,
+                input_frames,
+                output_frames: schedule.output_frames(),
+            },
+            &cancel,
+        )?
+    };
     // Whole-frame rounding can extend the final interval. Match audio, subtitles,
     // and chapters to the actual video duration.
     let media_speed = args.fps_scale * input_frames as f64 / schedule.output_frames() as f64;
     let retiming = encode::requires_retiming(args.speed);
-    let audio_is_encoded = args
-        .audio_codec
-        .as_deref()
-        .map_or_else(|| retiming, |codec| codec != "copy");
+    let audio_is_encoded = sequence.is_none()
+        && args
+            .audio_codec
+            .as_deref()
+            .map_or_else(|| retiming, |codec| codec != "copy");
     ensure!(
         !audio_is_encoded || info.audio_bitrates.iter().all(Option::is_some),
         "could not determine every source audio bitrate"
@@ -427,49 +476,57 @@ pub(crate) fn process(args: Args, cancel: CancellationToken, ui: &Ui) -> Result<
         worker
     };
     cancel.check()?;
-    for (label, rate) in [("Source", info.rate), ("Target", output_rate)] {
-        ui.info(
-            label,
-            format_args!(
-                "{}x{} @ {:.2} fps",
-                info.width,
-                info.height,
-                rate.num as f64 / rate.den as f64
-            ),
-        );
-    }
-    let staged = dunce::simplified(temp.path()).join(format!("encoded.{extension}"));
-    let chapter_metadata =
-        if retiming && encode::supports_timed_metadata(&extension) && !info.chapters.is_empty() {
-            let metadata = dunce::simplified(temp.path()).join("chapters.ffmetadata");
-            chapters::write_retimed(
-                &metadata,
-                &info.chapters,
-                info.source_start_time,
-                media_speed,
-            )?;
-            Some(metadata)
-        } else {
-            None
-        };
-    let mut command = encode::command(
-        &ffmpeg,
-        (info.width, info.height),
-        &input,
-        &staged,
-        encode::Timing {
-            rate: output_rate,
-            video_quality,
-            speed: media_speed,
-            duration: schedule.output_frames() as f64 * output_rate.den as f64
-                / output_rate.num as f64,
-            preserve_source_timing: !retiming,
-            source_audio_bitrates: info.audio_bitrates.clone(),
-            chapter_metadata,
-        },
-        &extension,
-        &args,
-    );
+    let staged_images = dunce::simplified(temp.path()).join("frames");
+    let staged = if sequence.is_some() {
+        fs::create_dir(&staged_images)?;
+        Sequence::staged_pattern(&staged_images, &extension)
+    } else {
+        dunce::simplified(temp.path()).join(format!("encoded.{extension}"))
+    };
+    let chapter_metadata = if sequence.is_none()
+        && retiming
+        && encode::supports_timed_metadata(&extension)
+        && !info.chapters.is_empty()
+    {
+        let metadata = dunce::simplified(temp.path()).join("chapters.ffmetadata");
+        chapters::write_retimed(
+            &metadata,
+            &info.chapters,
+            info.source_start_time,
+            media_speed,
+        )?;
+        Some(metadata)
+    } else {
+        None
+    };
+    let mut command = if sequence.is_some() {
+        encode::image_command(
+            &ffmpeg,
+            (info.width, info.height),
+            &staged,
+            output_rate,
+            args.video_codec.as_deref(),
+        )
+    } else {
+        encode::command(
+            &ffmpeg,
+            (info.width, info.height),
+            &input,
+            &staged,
+            encode::Timing {
+                rate: output_rate,
+                video_quality,
+                speed: media_speed,
+                duration: schedule.output_frames() as f64 * output_rate.den as f64
+                    / output_rate.num as f64,
+                preserve_source_timing: !retiming,
+                source_audio_bitrates: info.audio_bitrates.clone(),
+                chapter_metadata,
+            },
+            &extension,
+            &args,
+        )
+    };
     command
         .stdin(Stdio::from(worker.take_stdout()))
         .stdout(Stdio::piped());
@@ -484,11 +541,22 @@ pub(crate) fn process(args: Args, cancel: CancellationToken, ui: &Ui) -> Result<
             decoder.finish()?;
             encoder.finish()?;
             cancel.check()?;
-            ensure!(
-                staged.is_file() && fs::metadata(&staged)?.len() > 0,
-                "FFmpeg did not produce a valid output"
-            );
-            paths::commit_output(&staged, &output, args.overwrite, &cancel)?;
+            if let Some(sequence) = &sequence {
+                sequence.commit(
+                    &staged_images,
+                    &output,
+                    &input,
+                    schedule.output_frames(),
+                    args.overwrite,
+                    &cancel,
+                )?;
+            } else {
+                ensure!(
+                    staged.is_file() && fs::metadata(&staged)?.len() > 0,
+                    "FFmpeg did not produce a valid output"
+                );
+                paths::commit_output(&staged, &output, args.overwrite, &cancel)?;
+            }
             Ok(())
         });
     match result {
@@ -611,10 +679,7 @@ mod tests {
         let heading = decoder.to_string();
         let error = attach_cleanup_failure(original, decoder);
         let error = attach_cleanup_failure(error, failure("FFmpeg encoding", "", true));
-        assert_eq!(
-            format!("{error:#}"),
-            format!("{heading}: NCNN interpolation failed (code -3)")
-        );
+        assert_eq!(format!("{error:#}"), heading);
     }
 
     #[test]
@@ -648,7 +713,7 @@ mod tests {
         let heading = failure.to_string();
         assert!(!heading.contains('\n'));
         let error = attach_cleanup_failure(anyhow!("Broken pipe"), failure);
-        assert_eq!(format!("{error:#}"), format!("{heading}: Broken pipe"));
+        assert_eq!(format!("{error:#}"), heading);
     }
 
     #[test]
@@ -659,9 +724,26 @@ mod tests {
         let encoder = failure("FFmpeg encoding", "Unknown encoder", true);
         let heading = encoder.to_string();
         let error = attach_cleanup_failure(error, encoder);
-        assert_eq!(
-            format!("{error:#}"),
-            format!("{heading}: NCNN interpolation failed (code -3)")
-        );
+        assert_eq!(format!("{error:#}"), heading);
+    }
+
+    #[test]
+    fn real_backend_error_takes_priority_over_cleanup_warnings_and_broken_pipes() {
+        for encoder_first in [false, true] {
+            let encoder = failure("FFmpeg encoding", "Unknown encoder", false);
+            let heading = encoder.to_string();
+            let cleanup = failure("FFmpeg decoding", "deprecated pixel format", true);
+            let (first, second) = if encoder_first {
+                (encoder, cleanup)
+            } else {
+                (cleanup, encoder)
+            };
+            let error = attach_cleanup_failure(anyhow!("Broken pipe"), first);
+            let error = attach_cleanup_failure(error, second);
+            assert_eq!(format!("{error:#}"), heading);
+            let report = error.downcast_ref::<ProcessFailure>().unwrap().report();
+            assert!(report.reason.starts_with("FFmpeg encoding failed ("));
+            assert_eq!(report.details, ["Unknown encoder"]);
+        }
     }
 }

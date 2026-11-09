@@ -70,8 +70,8 @@ def frames(output, *options):
 
 
 def check_cleanup():
-    assert not list(test_root.glob(f".{app}-*")), "Output staging was not cleaned"
-    assert not list(test_root.glob("*.lock")), "Output locks were not cleaned"
+    assert not list(test_root.rglob(f".{app}-*")), "Output staging was not cleaned"
+    assert not list(test_root.rglob("*.lock")), "Output locks were not cleaned"
     assert not list(os_temp.glob(f".{app}-*")), "OS temporary staging was not cleaned"
 
 
@@ -94,7 +94,7 @@ assert run(executable, "--version").strip() == f"{app} {package['version']}"
 (root / "target").mkdir(exist_ok=True)
 with tempfile.TemporaryDirectory(prefix="rife-smoke-", dir=root / "target") as directory:
     test_root = Path(directory)
-    os_temp = test_root / "os-temp"
+    os_temp = test_root / "os-%temp"
     os_temp.mkdir()
     # Scope TMPDIR/TMP/TEMP to these test subprocesses, including Windows GetTempPath.
     os.environ.update({name: str(os_temp) for name in ["TMPDIR", "TMP", "TEMP"]})
@@ -141,14 +141,66 @@ with tempfile.TemporaryDirectory(prefix="rife-smoke-", dir=root / "target") as d
         assert next(s for s in info["streams"] if s["codec_type"] == "video")["avg_frame_rate"] == "60000/1001"
         assert any(s["codec_type"] == "audio" for s in info["streams"])
     log = rife("-i", source, "-m", "rife-v4.26", "-f", "2", "-v", "--video-codec", "ffv1", "-y", test_root / "verbose.nut")
-    for label in ["Counted", "Loaded", "Device", "Source", "Target", "Processed", "Saved"]:
+    labels = ["Source", "Target", "Counted", "Loaded", "Device", "Processed", "Saved"]
+    for label in labels:
         assert re.search(rf"^ *{label} +", log, re.M), log
+    assert re.fullmatch(r"Source Target Counted Loaded (?:Device )+Processed Saved",
+                        " ".join(line.split()[0] for line in log.splitlines())), log
     assert not re.search(r"^ *(?:Counting|Loading|Processing|Saving)\b", log, re.M), log
     assert log.index("Counted 6 frames in total") < log.index("Loaded model")
     assert re.search(r"^ +Loaded model `rife-v4.26`$", log, re.M), log
-    assert re.search(r"^ +Device .+\n +Source 64x64 @ 29\.97 fps\n +Target 64x64 @ 59\.94 fps$", log, re.M), log
+    assert re.search(r"^ +Source 64x64 @ 29\.97 fps\n +Target 64x64 @ 59\.94 fps$", log, re.M), log
     assert not re.search(r"^ *Encoding|finalizing", log, re.M), log
     assert not re.search(r"Done:|^ *Video |^ *Model |Scenes|…|\.\.\.|Extracting frames:|Encoding video:|\x1b|\n\n", log, re.M), log
+    expected_images = hashes(test_root / "threshold-0.3.nut")
+    for extension in ["png", "PNG", "bmp", "tiff", "ppm"]:
+        directory = test_root / f"frames-{extension}"
+        directory.mkdir()
+        pattern = directory / f"frame_%08d.{extension}"
+        rife("-i", source, "-m", "rife-v4.26", "-f", "2", "--crf", "51",
+             "--audio-codec", "rife_missing_encoder", pattern)
+        assert sorted(path.name for path in directory.iterdir()) == [
+            f"frame_{number:08d}.{extension}" for number in range(1, 13)], pattern
+        assert hashes(pattern) == expected_images, f"Lossless {extension} changed RGB pixels"
+        before = {path.name: path.read_bytes() for path in directory.iterdir()}
+        log = rife("-i", source, "-m", "rife-v4.26", "-f", "2", pattern, succeeds=False)
+        assert "output already exists" in log and "Loaded" not in log, log
+        log = rife("-i", source, "-m", "rife-v4.26", "-f", "2", "-y",
+                   "--video-codec", "rife_missing_encoder", pattern, succeeds=False)
+        assert "rife_missing_encoder" in log and log.endswith("\n\nerror: native backend failed\n"), log
+        assert {path.name: path.read_bytes() for path in directory.iterdir()} == before
+        # A successful replacement keeps the same numbering and raw RGB values.
+        rife("-i", source, "-m", "rife-v4.26", "-f", "2", "-y", pattern)
+        assert hashes(pattern) == expected_images
+        check_cleanup()
+    print("Passed: lossless image sequences, RGB equality, numbering, overwrite protection and encoder-failure cleanup.", flush=True)
+    escaped = test_root / "escaped-frames"
+    escaped.mkdir()
+    pattern = escaped / "视%%频_%d.png"
+    rife("-i", source, "-m", "rife-v4.26", "-s", "0.5", "--audio-codec", "copy", pattern)
+    assert set(path.name for path in escaped.iterdir()) == {f"视%频_{number}.png" for number in range(1, 13)}
+    assert hashes(pattern) == expected_images, "Speed-adjusted image schedule changed"
+    odd_source = test_root / "odd.nut"
+    run(ffmpeg, "-v", "error", "-f", "lavfi", "-i", "testsrc=size=65x67:rate=4:duration=1", "-c:v", "ffv1", odd_source)
+    odd_video = test_root / "odd-output.nut"
+    odd_images = test_root / "odd-frames"
+    odd_images.mkdir()
+    for output, codec in [(odd_video, ["--video-codec", "ffv1"]), (odd_images / "%02d.png", [])]:
+        rife("-i", odd_source, "-m", "rife-v4.26", "-f", "1.5", "-s", "0.75", *codec, output)
+    assert len(list(odd_images.iterdir())) == 8
+    assert hashes(odd_images / "%02d.png") == hashes(odd_video), "Odd-sized RGB frames changed"
+    image_info = probe(odd_images / "01.png", "-show_entries", "stream=width,height")["streams"][0]
+    assert (image_info["width"], image_info["height"]) == (65, 67), "Images were padded"
+    jpeg = test_root / "jpeg-frames"
+    jpeg.mkdir()
+    rife("-i", source, "-m", "rife-v4.26", jpeg / "%03d.jpg")
+    assert len(list(jpeg.iterdir())) == 6
+    corrupt = test_root / "corrupt.mp4"
+    corrupt.write_bytes(b"not a video")
+    log = rife("-i", corrupt, test_root / "never.mp4", succeeds=False)
+    assert "FFprobe failed" in log and log.endswith("\n\nerror: native backend failed\n"), log
+    check_cleanup()
+    print("Passed: escaped/unpadded patterns, odd dimensions, speed-adjusted image schedules, JPEG defaults and probe errors.", flush=True)
     default_gif = test_root / "default.gif"
     explicit_gif = test_root / "explicit.gif"
     for output, codec in [(default_gif, []), (explicit_gif, ["--video-codec", "gif"])]:
@@ -158,6 +210,8 @@ with tempfile.TemporaryDirectory(prefix="rife-smoke-", dir=root / "target") as d
     failed = test_root / "encoder-failure.mp4"
     log = rife("-i", source, "-m", "rife-v4.26", "--video-codec", "rife_missing_encoder", "-y", failed, succeeds=False)
     assert re.search(r"^error:", log, re.M) and "rife_missing_encoder" in log and not failed.exists(), log
+    assert log.endswith("\n\nerror: native backend failed\n"), log
+    assert "Broken pipe" not in log and "FFmpeg decoding failed" not in log, log
     check_cleanup()
     for flag in ["-h", "--help"]:
         help_text = run(executable, flag)

@@ -420,17 +420,7 @@ pub(crate) fn supports_timed_metadata(extension: &str) -> bool {
     !Container::from_extension(extension).has_video_only_output()
 }
 
-pub(crate) fn command(
-    ffmpeg: &Path,
-    dimensions: (u32, u32),
-    input: &Path,
-    staged_output: &Path,
-    timing: Timing,
-    ext: &str,
-    args: &Args,
-) -> Command {
-    let output_rate = timing.rate;
-    let container = Container::from_extension(ext);
+fn raw_video_command(ffmpeg: &Path, dimensions: (u32, u32), output_rate: Rate) -> Command {
     let mut cmd = Command::new(ffmpeg);
     cmd.args([
         "-hide_banner",
@@ -443,16 +433,59 @@ pub(crate) fn command(
         "pipe:1",
         "-stats_period",
         "0.15",
-    ])
-    .args([
         "-f",
         "rawvideo",
         "-pixel_format",
         config::PIXEL_FORMAT,
         "-video_size",
         &format!("{}x{}", dimensions.0, dimensions.1),
-    ])
-    .args(["-framerate", &output_rate.to_string(), "-i", "pipe:0"]);
+        "-framerate",
+        &output_rate.to_string(),
+        "-i",
+        "pipe:0",
+    ]);
+    cmd
+}
+
+pub(crate) fn image_command(
+    ffmpeg: &Path,
+    dimensions: (u32, u32),
+    output: &Path,
+    rate: Rate,
+    codec: Option<&str>,
+) -> Command {
+    let mut cmd = raw_video_command(ffmpeg, dimensions, rate);
+    cmd.args([
+        "-map",
+        "0:v:0",
+        "-fps_mode:v",
+        "passthrough",
+        "-f",
+        "image2",
+        "-start_number",
+        "1",
+    ]);
+    if let Some(codec) = codec {
+        cmd.args(["-c:v", codec]);
+    }
+    // Pass packed RGB directly to the image encoder. FFmpeg chooses its codec,
+    // supported pixel format and quality defaults; video presets do not apply.
+    cmd.arg(output);
+    cmd
+}
+
+pub(crate) fn command(
+    ffmpeg: &Path,
+    dimensions: (u32, u32),
+    input: &Path,
+    staged_output: &Path,
+    timing: Timing,
+    ext: &str,
+    args: &Args,
+) -> Command {
+    let output_rate = timing.rate;
+    let container = Container::from_extension(ext);
+    let mut cmd = raw_video_command(ffmpeg, dimensions, output_rate);
 
     let video_only = container.has_video_only_output();
     // FFmpeg requires every input to appear before output-specific options such as -map.

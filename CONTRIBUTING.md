@@ -89,6 +89,8 @@ Rust owns the public API and processing pipeline. The CLI runs model loading and
 
 The C++ backend is statically linked. Native build configuration and source overlays are maintained in `crates/rife-core/build.rs` and `crates/rife-core/native/CMakeLists.txt`.
 
+Image sequences use a separate `image2` encoder command: feed RGB8 directly, keep one image per scheduled frame, and leave image quality/pixel-format defaults to FFmpeg. Do not apply video presets or probe source bitrate packets for this path. `images.rs` parses numbered output patterns and commits a validated set of staged frames with bounded memory, same-filesystem preparation, backups, and rollback. Sequence jobs share a directory lock so differently padded or overlapping patterns cannot write concurrently. Preserve input protection and leave unrelated files untouched. The smoke suite compares decoded PNG/BMP/TIFF/PPM pixels against FFV1 output and checks numbering, replacement, errors, odd dimensions, and playback scheduling. Backend errors use one common terminal layout; failures caused by cleanup must not replace the original backend diagnosis.
+
 ## Documentation
 
 - `README.md` covers installation, usage, options, and limitations for end users, with a short pointer to this guide for contributors.

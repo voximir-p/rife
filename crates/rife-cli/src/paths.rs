@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Voximir.
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::{Args, Model, config};
+use crate::{Args, Model, config, images::Sequence};
 use anyhow::{Context, Result, bail, ensure};
 use rife_core::CancellationToken;
 use std::{
@@ -67,13 +67,23 @@ pub(crate) fn resolve_paths(args: &Args) -> Result<(PathBuf, PathBuf, PathBuf)> 
         .context("output directory does not exist")?;
     let output = parent.join(filename);
 
-    validate_output(&input, &output, args.overwrite)?;
+    ensure!(
+        output.extension().is_some(),
+        "output must have a file extension"
+    );
+    if Sequence::parse(&output)?.is_none() {
+        validate_output(&input, &output, args.overwrite)?;
+    }
     Ok((input, output, parent))
 }
 
 pub(crate) fn validate_output(input: &Path, output: &Path, overwrite: bool) -> Result<()> {
     ensure!(output != input, "input and output must be different files");
-    if output.exists() {
+    if match fs::symlink_metadata(output) {
+        Ok(_) => true,
+        Err(error) if error.kind() == ErrorKind::NotFound => false,
+        Err(error) => return Err(error).context("could not inspect output path"),
+    } {
         ensure!(
             dunce::canonicalize(output)? != input,
             "refusing to overwrite the original input"
@@ -86,7 +96,7 @@ pub(crate) fn validate_output(input: &Path, output: &Path, overwrite: bool) -> R
     }
     ensure!(
         output.extension().is_some(),
-        "output must have a video file extension"
+        "output must have a file extension"
     );
     Ok(())
 }
@@ -106,14 +116,7 @@ pub(crate) fn commit_output(
     // Prepare the complete file on the destination filesystem before changing
     // an existing output. Cross-drive copies must never expose partial video.
     let ready = output_tempfile(parent)?;
-    match fs::rename(staged, &ready) {
-        Ok(()) => {}
-        Err(error) if error.kind() == ErrorKind::CrossesDevices => {
-            copy_output(staged, &ready, cancel)
-                .context("could not copy finished video to output directory")?;
-        }
-        Err(error) => return Err(error).context("could not stage finished video for output"),
-    }
+    stage_output(staged, &ready, cancel)?;
     cancel.check()?;
     if !output.exists() {
         fs::rename(&ready, output).context("could not move finished video into place")?;
@@ -142,6 +145,18 @@ pub(crate) fn commit_output(
             Err(err).context("could not move finished video into place; old output was restored")
         }
     }
+}
+
+pub(crate) fn stage_output(staged: &Path, ready: &Path, cancel: &CancellationToken) -> Result<()> {
+    match fs::rename(staged, ready) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::CrossesDevices => {
+            copy_output(staged, ready, cancel)
+                .context("could not copy finished output to output directory")?;
+        }
+        Err(error) => return Err(error).context("could not stage finished output"),
+    }
+    Ok(())
 }
 
 fn copy_output(source: &Path, destination: &Path, cancel: &CancellationToken) -> Result<()> {

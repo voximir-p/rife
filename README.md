@@ -9,6 +9,7 @@
 - Preserve audio pitch when changing playback speed; at normal speed, audio is copied by default.
 - Retime chapter boundaries and MKV subtitle cue timestamps and durations when playback speed changes.
 - Detect scene cuts to avoid interpolating across unrelated frames.
+- Save interpolated frames as numbered images using printf-style output patterns.
 - Select the CPU, one or more GPUs, or automatic device selection.
 - Choose models by their directory name without maintaining a model-name allowlist.
 - Use user-provided FFmpeg, FFprobe, and model files beside the executable. Runtime paths are resolved relative to the executable, not the current working directory.
@@ -59,6 +60,10 @@ rife -i input.mp4 -m rife-v4.26-large -t 0.4 -f 2 -v output.mkv
 
 # Use the CPU and GPU 0, with two workers on each device to double the frame rate
 rife -i input.mp4 -g -1,0 -j 1:2,2:2 -f 2 output.mp4
+
+# Save interpolated frames as lossless PNG images
+mkdir -p frames
+rife -i input.mp4 -f 2 "frames/frame_%08d.png"
 ```
 
 `--fps-scale` and `--speed` are independent:
@@ -73,7 +78,7 @@ rife -i input.mp4 -g -1,0 -j 1:2,2:2 -f 2 output.mp4
 | Option                                      | Description                                                                                                        |
 | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | `-i, --input FILE`                          | **Required.** Input video.                                                                                         |
-| `OUTPUT`                                    | **Required.** Output filename and container.                                                                       |
+| `OUTPUT`                                    | **Required.** Video filename or image sequence pattern, such as `frames/frame_%08d.png`.                            |
 | `-m, --model MODEL`                         | Model directory name. Default: `rife-v4.25`.                                                                       |
 | `-f, --fps-scale FACTOR`                    | Output FPS divided by input FPS. Default: `1`.                                                                     |
 | `-s, --speed FACTOR`                        | Playback speed. Default: `1`; `0.5` is half-speed and `2` is double-speed.                                         |
@@ -82,7 +87,7 @@ rife -i input.mp4 -g -1,0 -j 1:2,2:2 -f 2 output.mp4
 | `-j, --jobs LOAD:PROCESS[,PROCESS...]:SAVE` | Shared input/output buffering budgets and per-device worker counts. Default: `1:2:2`.                              |
 | `-t, --threshold THRESHOLD`                 | Scene-cut threshold from `0` to `1`. Default: `0.3`; `1` disables scene detection.                                 |
 | `-y, --overwrite`                           | Replace an existing output. Waits if another rife process holds its output lock.                                   |
-| `--video-codec ENCODER`                     | Override the FFmpeg video encoder. If it does not support CRF, rife uses a bitrate fallback.                       |
+| `--video-codec ENCODER`                     | Override the FFmpeg video or image encoder. Video encoders without CRF use a bitrate fallback.                    |
 | `--audio-codec ENCODER`                     | Override the audio encoder. At normal speed, audio is copied by default.                                           |
 | `-v, --verbose`                             | Show model, dimensions, frame rates, and device details.                                                            |
 
@@ -92,11 +97,21 @@ Chapter boundaries and MKV subtitle cue timestamps and durations follow the same
 
 GIF output uses a palette generated from the video for better colors, including with `--video-codec gif`. Palette generation can add saving time and affects file size.
 
-Temporary processing files use the OS temporary directory. If rife cannot create a temporary folder there, it uses the output's parent directory. The finished video is transferred to the output location after encoding succeeds, including when that location is on another drive.
+### Image sequences
 
-Native backend failures show the actual failure reason and raw backend diagnostics, followed by a final error summary. Failed jobs clean up their temporary files and output locks and leave an existing output unchanged.
+Use exactly one `%d` or `%0Nd` placeholder in the output filename, following [FFmpeg's image-sequence syntax](https://ffmpeg.org/ffmpeg-formats.html#image2-2). For example, `frame_%08d.png` produces `frame_00000001.png`, `frame_00000002.png`, and so on. Numbering starts at 1; `%%` represents a literal percent sign. The output directory must already exist. `--fps-scale` and `--speed` determine which frames are generated as they do for video output; individual images do not store the playback frame rate.
 
-Counting shows the number of video frames counted so far, then changes to green `Counted N frames in total` when finished. Loading changes to green Loaded when the model is ready. When interpolation ends, the Processed line reports its elapsed time. A separate Saving progress bar, in the same color as Processing, tracks output encoding with its own timer. The final green Saved line reports the saving time; both summaries remain visible. Live status rows keep the cursor at the start of the row and disappear on Ctrl+C while leaving the terminal’s own cancellation indicator and cursor position unchanged. Redirected logs contain completed messages rather than live progress.
+FFmpeg selects the image encoder, pixel format, and quality defaults from the extension, unless `--video-codec` overrides the encoder. No video CRF, bitrate, chroma-subsampling, or padding presets are applied. Lossless RGB formats such as PNG, BMP, TIFF, and PPM preserve the interpolated RGB8 pixels; lossy formats such as JPEG use FFmpeg's defaults. Images contain no audio, subtitles, chapters, or attachments, so `--crf` and `--audio-codec` do not apply to image sequences. The existing RGB8/HDR limitation still applies.
+
+Frames are saved to their final names only after encoding succeeds. Existing numbered files require `--overwrite`; unrelated files and frames beyond the new sequence's range are left untouched. Failed or cancelled saves roll back frames already moved into place. Image-sequence jobs writing to the same directory share an output lock.
+
+### Progress and output safety
+
+Temporary processing files use the OS temporary directory. If rife cannot create a temporary folder there, it uses the output's parent directory. Finished outputs are transferred to the output location after encoding succeeds, including when that location is on another drive.
+
+Native and FFmpeg backend failures show the actual failure reason and raw backend diagnostics, followed by a blank line and `error: native backend failed`. Failed jobs clean up their temporary files and output locks and preserve existing outputs.
+
+Verbose output shows Source and Target first, followed by frame counting, model loading, Device, and processing. Counting shows the number of video frames counted so far, then changes to green `Counted N frames in total` when finished. Loading changes to green Loaded when the model is ready. When interpolation ends, the Processed line reports its elapsed time. A separate Saving progress bar, in the same color as Processing, tracks output encoding with its own timer. The final green Saved line reports the saving time; both summaries remain visible. Live status rows keep the cursor at the start of the row and disappear on Ctrl+C while leaving the terminal’s own cancellation indicator and cursor position unchanged. Redirected logs contain completed messages rather than live progress.
 
 ## Models
 

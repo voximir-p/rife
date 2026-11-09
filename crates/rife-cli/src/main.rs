@@ -20,6 +20,7 @@ mod config;
 mod encode;
 #[cfg(test)]
 mod encode_timing_tests;
+mod images;
 mod media;
 mod output_lock;
 mod paths;
@@ -88,7 +89,7 @@ struct Args {
     #[arg(short = 'y', long = "overwrite", help = format!("Allow replacing an output, waiting if another {APP_NAME} instance is writing it"))]
     overwrite: bool,
 
-    /// Override video encoder; unsupported CRF uses a frame-scaled bitrate
+    /// Override FFmpeg encoder; video encoders without CRF use a frame-scaled bitrate
     #[arg(long, value_name = "ENCODER")]
     video_codec: Option<String>,
 
@@ -100,7 +101,7 @@ struct Args {
     #[arg(short, long)]
     verbose: bool,
 
-    /// Output video filename (container detected from extension)
+    /// Output video filename or image sequence pattern (e.g. frame_%08d.png)
     #[arg(value_name = "OUTPUT")]
     output: PathBuf,
 }

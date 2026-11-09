@@ -155,7 +155,7 @@ fn encode_fixture(
     preserve_source_timing: bool,
 ) -> Value {
     let ffmpeg = tool("ffmpeg");
-    let info = media::probe(&tool("ffprobe"), input, &CancellationToken::default()).unwrap();
+    let info = media::probe(&tool("ffprobe"), input, &CancellationToken::default(), true).unwrap();
     let chapter_metadata = (!preserve_source_timing && !info.chapters.is_empty()).then(|| {
         let path = output.with_extension("ffmeta");
         chapters::write_retimed(&path, &info.chapters, info.source_start_time, speed).unwrap();

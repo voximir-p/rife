@@ -188,15 +188,23 @@ pub(crate) fn error(message: impl fmt::Display) {
 }
 
 pub(crate) fn report_error(failure: &anyhow::Error) {
-    if let Some(backend) = failure.downcast_ref::<crate::worker::Failure>()
-        && let Some(report) = backend.report()
-    {
-        let term = Term::stderr();
-        for line in backend_error_lines(report, backend, Palette::stderr()) {
-            write_line(&term, &line);
-        }
+    if let Some(backend) = failure.downcast_ref::<crate::worker::Failure>() {
+        let fallback = crate::worker::BackendReport {
+            reason: backend.to_string(),
+            details: Vec::new(),
+        };
+        report_backend_error(backend.report().unwrap_or(&fallback));
+    } else if let Some(backend) = failure.downcast_ref::<crate::process::ProcessFailure>() {
+        report_backend_error(&backend.report());
     } else {
         error(format_args!("{failure:#}"));
+    }
+}
+
+fn report_backend_error(report: &crate::worker::BackendReport) {
+    let term = Term::stderr();
+    for line in backend_error_lines(report, "native backend failed", Palette::stderr()) {
+        write_line(&term, &line);
     }
 }
 

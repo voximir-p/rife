@@ -160,7 +160,12 @@ pub(crate) struct VideoInfo {
     pub(crate) chapters: Vec<Chapter>,
     pub(crate) source_start_time: f64,
 }
-pub(crate) fn probe(ffprobe: &Path, input: &Path, cancel: &CancellationToken) -> Result<VideoInfo> {
+pub(crate) fn probe(
+    ffprobe: &Path,
+    input: &Path,
+    cancel: &CancellationToken,
+    include_bitrates: bool,
+) -> Result<VideoInfo> {
     let mut command = Command::new(ffprobe);
     command
         .args(["-v", "error", "-show_entries", PROBE_ENTRIES, "-of", "json"])
@@ -193,10 +198,12 @@ pub(crate) fn probe(ffprobe: &Path, input: &Path, cancel: &CancellationToken) ->
         .iter()
         .filter(|stream| stream.codec_type.as_deref() == Some("audio"))
         .collect::<Vec<_>>();
-    let need_audio_packets = audio_streams
-        .iter()
-        .any(|stream| parse_bitrate(stream.bit_rate.as_deref()).is_none());
-    let need_video_packets = parse_bitrate(stream.bit_rate.as_deref()).is_none();
+    let need_audio_packets = include_bitrates
+        && audio_streams
+            .iter()
+            .any(|stream| parse_bitrate(stream.bit_rate.as_deref()).is_none());
+    let need_video_packets =
+        include_bitrates && parse_bitrate(stream.bit_rate.as_deref()).is_none();
     let audio_packet_sizes = if need_audio_packets {
         packet_stats(ffprobe, input, "a", cancel)?
     } else {
