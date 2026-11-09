@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-09
+
 ### Changed
 
 - Show live frame counting and model loading, followed by Counted and Loaded summaries.
@@ -45,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The initial release targets Windows x64.
 - FFmpeg, FFprobe, and model files are downloaded and installed by the user; they are not included in the release archive.
 
-[unreleased]: https://github.com/voximir-p/rife/compare/v0.1.1...HEAD
+[unreleased]: https://github.com/voximir-p/rife/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/voximir-p/rife/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/voximir-p/rife/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/voximir-p/rife/releases/tag/v0.1.0
