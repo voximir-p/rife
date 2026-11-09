@@ -20,6 +20,7 @@ mod config;
 mod encode;
 #[cfg(test)]
 mod encode_timing_tests;
+mod encoder_options;
 mod images;
 mod media;
 mod output_lock;
@@ -62,9 +63,14 @@ struct Args {
     #[arg(short = 's', long, default_value_t = PlaybackOptions::default().speed, value_name = "FACTOR", value_parser = parse_factor)]
     speed: f64,
 
-    /// Finite, non-negative CRF override; default uses source metadata or 20
-    #[arg(short = 'c', long, value_name = "CRF", value_parser = encode::parse_crf)]
-    crf: Option<String>,
+    /// Extra FFmpeg output options; repeatable (e.g. -e -crf=23 or -e "-crf 12 -b:a 10k")
+    #[arg(
+        short = 'e',
+        long = "extra-encoder-option",
+        value_name = "OPTIONS",
+        allow_hyphen_values = true
+    )]
+    extra_encoder_options: Vec<encoder_options::EncoderOptions>,
 
     /// Device selection: auto or comma-separated GPU IDs; use -1 for CPU (e.g. -1,0)
     #[arg(short, long, default_value_t = DeviceSelection::default(), value_name = "GPU", allow_hyphen_values = true)]
@@ -107,6 +113,70 @@ struct Args {
 }
 
 impl Args {
+    fn extra_encoder_args(&self) -> impl Iterator<Item = &str> {
+        self.extra_encoder_options
+            .iter()
+            .flat_map(encoder_options::EncoderOptions::arguments)
+    }
+
+    fn encoder_option(&self, names: &[&str]) -> Option<&str> {
+        self.extra_encoder_options
+            .iter()
+            .flat_map(encoder_options::EncoderOptions::entries)
+            .filter(|(name, _)| names.contains(name))
+            .last()
+            .and_then(|(_, value)| value)
+    }
+
+    fn video_codec(&self) -> Option<&str> {
+        self.encoder_option(&[
+            "-c",
+            "-codec",
+            "-vcodec",
+            "-c:v",
+            "-codec:v",
+            "-c:v:0",
+            "-codec:v:0",
+            "-c:0",
+            "-codec:0",
+        ])
+        .or(self.video_codec.as_deref())
+    }
+
+    fn audio_codec(&self) -> Option<&str> {
+        self.encoder_option(&["-c", "-codec", "-acodec", "-c:a", "-codec:a"])
+            .or(self.audio_codec.as_deref())
+    }
+
+    fn extra_video_crf(&self) -> Option<&str> {
+        self.encoder_option(&["-crf", "-crf:v", "-crf:v:0", "-crf:0"])
+    }
+
+    fn extra_video_rate_control(&self) -> bool {
+        self.extra_encoder_options
+            .iter()
+            .flat_map(encoder_options::EncoderOptions::entries)
+            .any(|(name, _)| {
+                matches!(
+                    name,
+                    "-b" | "-b:v"
+                        | "-b:v:0"
+                        | "-b:0"
+                        | "-vb"
+                        | "-q"
+                        | "-q:v"
+                        | "-q:v:0"
+                        | "-q:0"
+                        | "-qscale"
+                        | "-qscale:v"
+                        | "-qscale:v:0"
+                        | "-qp"
+                        | "-qp:v"
+                        | "-qp:v:0"
+                )
+            })
+    }
+
     fn engine_options(&self) -> EngineOptions {
         EngineOptions {
             devices: self.gpu.clone(),
@@ -188,7 +258,7 @@ mod tests {
         assert_eq!(args.fps_scale, PlaybackOptions::default().fps_scale);
         assert_eq!(args.speed, PlaybackOptions::default().speed);
         assert_eq!(args.threshold, StreamOptions::default().threshold);
-        assert!(args.crf.is_none());
+        assert!(args.extra_encoder_options.is_empty());
     }
 
     #[test]
@@ -240,7 +310,8 @@ mod tests {
             }
             assert!(text.contains("--threshold <THRESHOLD>"), "{text}");
             assert!(text.contains("--speed <FACTOR>"), "{text}");
-            assert!(text.contains("--crf <CRF>"), "{text}");
+            assert!(text.contains("--extra-encoder-option <OPTIONS>"), "{text}");
+            assert!(!text.contains("--crf"), "{text}");
             assert!(!text.contains("--time-step"), "{text}");
         }
     }
@@ -450,23 +521,43 @@ mod tests {
     }
 
     #[test]
-    fn crf_accepts_non_negative_values_and_preserves_input() {
-        for value in ["0", "20", "51", "52", "1000000", "20.5"] {
-            assert_eq!(encode::parse_crf(value).unwrap(), value);
-            let args =
-                Args::try_parse_from([APP_NAME, "-i", "source.mp4", "--crf", value, "out.mp4"])
-                    .unwrap();
-            assert_eq!(args.crf.as_deref(), Some(value));
-        }
-        for value in [
-            "-1", "-0.5", "NaN", "inf", "+inf", "-inf", "Infinity", "1e309", "",
-        ] {
-            assert!(encode::parse_crf(value).is_err(), "accepted {value}");
+    fn extra_encoder_options_accept_both_forms_and_repeat_in_order() {
+        let args = Args::try_parse_from([
+            APP_NAME,
+            "-i",
+            "source.mp4",
+            "-e",
+            "-crf=23",
+            "--extra-encoder-option",
+            "-crf 12 -a:b 10k",
+            "-e",
+            "-metadata title='hello world'",
+            "out.mp4",
+        ])
+        .unwrap();
+        assert_eq!(
+            args.extra_encoder_args().collect::<Vec<_>>(),
+            [
+                "-crf",
+                "23",
+                "-crf",
+                "12",
+                "-a:b",
+                "10k",
+                "-metadata",
+                "title=hello world",
+            ]
+        );
+        assert_eq!(args.extra_video_crf(), Some("12"));
+        for flag in ["-c", "--crf"] {
             assert!(
-                Args::try_parse_from([APP_NAME, "-i", "source.mp4", "--crf", value, "out.mp4"])
-                    .is_err(),
-                "CLI accepted {value}"
+                Args::try_parse_from([APP_NAME, "-i", "source.mp4", flag, "23", "out.mp4"])
+                    .is_err()
             );
         }
+        assert!(
+            Args::try_parse_from([APP_NAME, "-i", "source.mp4", "-e", "-crf NaN", "out.mp4"])
+                .is_ok()
+        );
     }
 }

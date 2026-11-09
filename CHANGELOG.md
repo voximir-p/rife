@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Replace `-c`/`--crf` with repeatable `-e`/`--extra-encoder-option` for FFmpeg output settings. Migrate CRF overrides to `-e -crf=23`.
 - Show Source and Target before counting frames, followed by model loading, Device, and processing in verbose output.
 - End FFmpeg errors with a separate backend failure summary and keep cleanup errors from obscuring the original diagnostics.
 

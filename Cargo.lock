@@ -420,6 +420,7 @@ dependencies = [
  "rife-core",
  "serde",
  "serde_json",
+ "shlex",
  "tempfile",
  "windows-sys",
 ]

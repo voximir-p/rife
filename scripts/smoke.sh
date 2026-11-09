@@ -117,6 +117,34 @@ with tempfile.TemporaryDirectory(prefix="rife-smoke-", dir=root / "target") as d
         "sine=frequency=440:sample_rate=48000:duration=0.2002", "-map", "0:v", "-map", "1:a",
         "-c:v", "ffv1", "-level", "3", "-c:a", "pcm_s16le", "-shortest", "-y", source)
     original = hashes(source)
+    custom = test_root / "custom-options.mp4"
+    title = "hello world; $(echo untouched) $HOME"
+    log = rife("-i", source, "-m", "rife-v4.26", "-f", "2", "-s", "0.5",
+               "--audio-codec", "copy", "-e", "-crf=23", "--extra-encoder-option",
+               f"-crf 12 -c:a aac -b:a 10k -metadata 'title={title}'", custom)
+    assert b"crf=12.0" in custom.read_bytes(), "Repeated CRF options did not override defaults"
+    custom_info = probe(custom, "-show_streams", "-show_format")
+    assert custom_info["format"]["tags"]["title"] == title, "Quoted metadata was expanded or split"
+    assert any(stream["codec_name"] == "aac" for stream in custom_info["streams"])
+    assert next(stream for stream in custom_info["streams"] if stream["codec_type"] == "video")["codec_name"] == "h264"
+    single_crf = test_root / "single-crf.mp4"
+    rife("-i", source, "-m", "rife-v4.26", "-e", "-crf=23", "--audio-codec", "aac", single_crf)
+    assert b"crf=23.0" in single_crf.read_bytes(), "Inline CRF option was not passed to FFmpeg"
+    raw_images = test_root / "uncompressed-png"
+    raw_images.mkdir()
+    rife("-i", source, "-m", "rife-v4.26", "-e", "-compression_level=0", raw_images / "%03d.png")
+    assert hashes(raw_images / "%03d.png") == original, "Image encoder options changed RGB pixels"
+    for option in ["-rife_missing_option 1", "-crf NaN", "-a:b 10k"]:
+        failed_option = test_root / "bad-option.mp4"
+        log = rife("-i", source, "-m", "rife-v4.26", "-v", "-e", option, failed_option, succeeds=False)
+        assert log.startswith("error:") and log.endswith("\n\nerror: native backend failed\n"), log
+        assert not re.search(r"^ *(?:Source|Target|Counted|Loaded|Processed|Saved)\b", log, re.M), log
+        assert not failed_option.exists()
+    for removed_flag in ["-c", "--crf"]:
+        log = rife("-i", source, removed_flag, "23", test_root / "removed-crf.mp4", succeeds=False)
+        assert "unexpected argument" in log and not (test_root / "removed-crf.mp4").exists(), log
+    check_cleanup()
+    print("Passed: extra encoder options, repeated/inline CRF, literal quoted metadata, audio overrides, image settings and early errors.", flush=True)
     for threshold in ["0.3", "0", "1"]:
         output = test_root / f"threshold-{threshold}.nut"
         log = rife("-i", source, "-m", "rife-v4.26", "-f", "2", "-t", threshold,
@@ -157,7 +185,7 @@ with tempfile.TemporaryDirectory(prefix="rife-smoke-", dir=root / "target") as d
         directory = test_root / f"frames-{extension}"
         directory.mkdir()
         pattern = directory / f"frame_%08d.{extension}"
-        rife("-i", source, "-m", "rife-v4.26", "-f", "2", "--crf", "51",
+        rife("-i", source, "-m", "rife-v4.26", "-f", "2",
              "--audio-codec", "rife_missing_encoder", pattern)
         assert sorted(path.name for path in directory.iterdir()) == [
             f"frame_{number:08d}.{extension}" for number in range(1, 13)], pattern

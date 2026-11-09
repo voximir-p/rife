@@ -439,7 +439,7 @@ pub(crate) fn process(args: Args, cancel: CancellationToken, ui: &Ui) -> Result<
     let retiming = encode::requires_retiming(args.speed);
     let carries_audio = sequence.is_none() && encode::carries_audio(&extension);
     ensure!(
-        !carries_audio || !retiming || args.audio_codec.as_deref() != Some("copy"),
+        !carries_audio || !retiming || args.audio_codec() != Some("copy"),
         "audio codec copy cannot be used when playback speed changes"
     );
     // Keep all staging in the parent so even an early backend failure cleans up.
@@ -455,8 +455,7 @@ pub(crate) fn process(args: Args, cancel: CancellationToken, ui: &Ui) -> Result<
     let output_rate = info.rate.scaled(scale_num, scale_den)?;
     let audio_is_encoded = carries_audio
         && args
-            .audio_codec
-            .as_deref()
+            .audio_codec()
             .map_or_else(|| retiming, |codec| codec != "copy");
     ensure!(
         !audio_is_encoded || info.audio_bitrates.iter().all(Option::is_some),
@@ -497,12 +496,7 @@ pub(crate) fn process(args: Args, cancel: CancellationToken, ui: &Ui) -> Result<
     };
     let make_command = |timing: encode::Timing| {
         if sequence.is_some() {
-            encode::image_command(
-                &ffmpeg,
-                (info.width, info.height),
-                timing.rate,
-                args.video_codec.as_deref(),
-            )
+            encode::image_command(&ffmpeg, (info.width, info.height), timing.rate, &args)
         } else {
             encode::command(
                 &ffmpeg,

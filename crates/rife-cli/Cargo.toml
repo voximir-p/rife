@@ -28,6 +28,7 @@ indicatif.workspace = true
 console.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+shlex.workspace = true
 tempfile.workspace = true
 
 [target.'cfg(unix)'.dependencies]

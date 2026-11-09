@@ -15,21 +15,12 @@ const AAC_BITRATE_SCALE_NUM: u64 = 124;
 const AAC_BITRATE_SCALE_DEN: u64 = 100;
 const PAD_EVEN: &str = "pad=ceil(iw/2)*2:ceil(ih/2)*2";
 const RETIMING_EPSILON: f64 = 1e-12;
-pub(crate) const DEFAULT_CRF: &str = "20";
-const INVALID_CRF: &str = "CRF must be a finite number greater than or equal to 0";
+const DEFAULT_CRF: &str = "20";
 
 pub(crate) fn is_valid_crf(value: &str) -> bool {
     value
         .parse::<f64>()
         .is_ok_and(|crf| crf.is_finite() && crf >= 0.0)
-}
-
-pub(crate) fn parse_crf(value: &str) -> std::result::Result<String, String> {
-    if is_valid_crf(value) {
-        Ok(value.to_owned())
-    } else {
-        Err(INVALID_CRF.to_owned())
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -172,18 +163,18 @@ fn append_video_options(
     quality: &VideoQuality,
 ) {
     let preset = VideoPreset::for_container(container);
-    let codec = args.video_codec.as_deref().or(preset.codec);
+    let codec = args.video_codec().or(preset.codec);
     if let Some(codec) = codec {
         cmd.args(["-c:v", codec]);
     }
-    if args.video_codec.is_none() {
+    if args.video_codec().is_none() {
         cmd.args(preset.options);
         if preset.pad_even {
             // H.264 4:2:0 and related formats need even dimensions.
             cmd.args(["-vf", PAD_EVEN]);
         }
     }
-    if !container.has_video_only_output() || args.video_codec.is_some() {
+    if !container.has_video_only_output() || args.video_codec().is_some() {
         match quality {
             VideoQuality::Crf(crf) => {
                 cmd.args(["-crf", crf]);
@@ -213,21 +204,22 @@ pub(crate) fn prepare_video_quality(
     cancel: &CancellationToken,
 ) -> anyhow::Result<QualityPlan> {
     let container = Container::from_extension(extension);
-    if (container.has_video_only_output() && args.video_codec.is_none())
-        || container.uses_gif_palette(args.video_codec.as_deref())
+    if args.extra_video_rate_control()
+        || (container.has_video_only_output() && args.video_codec().is_none())
+        || container.uses_gif_palette(args.video_codec())
     {
         return Ok(QualityPlan::Fixed(VideoQuality::FormatDefault));
     }
 
-    let crf = args
-        .crf
-        .as_deref()
-        .or(input.source_crf)
-        .unwrap_or(DEFAULT_CRF)
-        .to_owned();
+    if let Some(crf) = args.extra_video_crf() {
+        // Preserve VP9's unconstrained CRF companion option, while explicit
+        // bitrate/quantizer flags above leave rate control entirely to FFmpeg.
+        return Ok(QualityPlan::Fixed(VideoQuality::Crf(crf.to_owned())));
+    }
+
+    let crf = input.source_crf.unwrap_or(DEFAULT_CRF).to_owned();
     let codec = match args
-        .video_codec
-        .as_deref()
+        .video_codec()
         .or(VideoPreset::for_container(container).codec)
     {
         Some(codec) => Some(Cow::Borrowed(codec)),
@@ -344,7 +336,7 @@ fn append_audio_options(
             &format!("{},apad,atrim=duration={duration:.17}", tempo_filter(speed)),
         ]);
     }
-    if let Some(codec) = args.audio_codec.as_deref() {
+    if let Some(codec) = args.audio_codec() {
         cmd.args(["-c:a", codec]);
         if codec != "copy" {
             append_source_bitrates(cmd, source_bitrates, codec);
@@ -473,7 +465,7 @@ pub(crate) fn image_command(
     ffmpeg: &Path,
     dimensions: (u32, u32),
     rate: Rate,
-    codec: Option<&str>,
+    args: &Args,
 ) -> Command {
     let mut cmd = raw_video_command(ffmpeg, dimensions, rate);
     cmd.args([
@@ -486,11 +478,12 @@ pub(crate) fn image_command(
         "-start_number",
         "1",
     ]);
-    if let Some(codec) = codec {
+    if let Some(codec) = args.video_codec() {
         cmd.args(["-c:v", codec]);
     }
     // Pass packed RGB directly to the image encoder. FFmpeg chooses its codec,
     // supported pixel format and quality defaults; video presets do not apply.
+    cmd.args(args.extra_encoder_args());
     cmd
 }
 
@@ -514,7 +507,7 @@ pub(crate) fn command(
             cmd.args(["-f", "ffmetadata", "-i"]).arg(metadata);
         }
     }
-    if container.uses_gif_palette(args.video_codec.as_deref()) {
+    if container.uses_gif_palette(args.video_codec()) {
         cmd.args([
             "-filter_complex",
             "[0:v]split[a][b];[a]palettegen[p];[b][p]paletteuse[v]",
@@ -582,6 +575,7 @@ pub(crate) fn command(
         "-enc_time_base:v",
         &format!("{}:{}", output_rate.den, output_rate.num),
     ]);
+    cmd.args(args.extra_encoder_args());
     cmd
 }
 
@@ -592,14 +586,13 @@ mod tests {
 
     #[test]
     fn crf_is_applied_to_video_streams_and_selects_vp9_constant_quality() {
-        let args =
-            Args::try_parse_from(["rife", "-i", "input.mp4", "--crf", "21", "out.mp4"]).unwrap();
+        let args = Args::try_parse_from(["rife", "-i", "input.mp4", "out.mp4"]).unwrap();
         let mut h264 = Command::new("ffmpeg");
         append_video_options(
             &mut h264,
             Container::Mp4,
             &args,
-            &VideoQuality::Crf(args.crf.clone().unwrap()),
+            &VideoQuality::Crf("21".into()),
         );
         let h264 = h264
             .get_args()
@@ -619,8 +612,6 @@ mod tests {
             "input.mp4",
             "--video-codec",
             "libvpx-vp9",
-            "-c",
-            "31",
             "out.webm",
         ])
         .unwrap();
@@ -629,7 +620,7 @@ mod tests {
             &mut vp9,
             Container::WebM,
             &vp9_args,
-            &VideoQuality::Crf(vp9_args.crf.clone().unwrap()),
+            &VideoQuality::Crf("31".into()),
         );
         let vp9 = vp9
             .get_args()
@@ -727,6 +718,106 @@ mod tests {
         assert_eq!(scale_fallback_bitrate(1000, 100, 200).unwrap(), 1500);
         assert_eq!(scale_fallback_bitrate(1000, 100, 100).unwrap(), 750);
         assert_eq!(scale_fallback_bitrate(1000, 100, 50).unwrap(), 375);
+    }
+
+    #[test]
+    fn extra_options_follow_inputs_and_defaults_for_video_and_images() {
+        let args = Args::try_parse_from([
+            "rife",
+            "-i",
+            "input.mp4",
+            "--audio-codec",
+            "copy",
+            "-e",
+            "-crf=23",
+            "-e",
+            "-crf 12 -c:a aac -b:a 10k -metadata title='hello world'",
+            "out.mp4",
+        ])
+        .unwrap();
+        assert_eq!(args.audio_codec(), Some("aac"));
+        let extra = args.extra_encoder_args().collect::<Vec<_>>();
+        let mut command = command(
+            Path::new("ffmpeg"),
+            (64, 64),
+            Path::new("input.mp4"),
+            Timing {
+                rate: Rate { num: 30, den: 1 },
+                video_quality: VideoQuality::Crf("20".into()),
+                speed: 1.0,
+                duration: 1.0,
+                preserve_source_timing: true,
+                source_audio_bitrates: vec![Some(128_000)],
+                chapter_metadata: None,
+            },
+            "mp4",
+            &args,
+        );
+        command.arg("staged.mp4");
+        let argv = command
+            .get_args()
+            .map(|arg| arg.to_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(&argv[argv.len() - extra.len() - 1..argv.len() - 1], extra);
+        assert_eq!(argv.last(), Some(&"staged.mp4"));
+        assert!(
+            argv[..argv.len() - extra.len() - 1]
+                .windows(2)
+                .any(|pair| pair == ["-crf", "20"])
+        );
+        assert!(
+            argv[..argv.len() - extra.len() - 1]
+                .windows(2)
+                .any(|pair| pair == ["-i", "input.mp4"])
+        );
+
+        let args = Args::try_parse_from([
+            "rife",
+            "-i",
+            "input.mp4",
+            "-e",
+            "-compression_level=0",
+            "frame_%03d.png",
+        ])
+        .unwrap();
+        let command = image_command(
+            Path::new("ffmpeg"),
+            (65, 67),
+            Rate { num: 30, den: 1 },
+            &args,
+        );
+        let argv = command
+            .get_args()
+            .map(|arg| arg.to_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(&argv[argv.len() - 2..], ["-compression_level", "0"]);
+        assert_eq!(argv.iter().filter(|&&arg| arg == "-i").count(), 1);
+        assert!(!argv.contains(&"-pix_fmt") && !argv.contains(&"-crf"));
+    }
+
+    #[test]
+    fn explicit_rate_control_does_not_require_automatic_bitrate_queries() {
+        for (extra, expected) in [
+            ("-crf=23", VideoQuality::Crf("23".into())),
+            ("-b:v 125k", VideoQuality::FormatDefault),
+            ("-qp 10", VideoQuality::FormatDefault),
+            ("-q:v 2", VideoQuality::FormatDefault),
+        ] {
+            let args =
+                Args::try_parse_from(["rife", "-i", "in.mp4", "-e", extra, "out.mp4"]).unwrap();
+            let quality = prepare_video_quality(
+                Path::new("missing-ffmpeg"),
+                "mp4",
+                &args,
+                VideoQualityInput {
+                    source_crf: Some("19"),
+                    source_bitrate: None,
+                },
+                &CancellationToken::default(),
+            )
+            .unwrap();
+            assert_eq!(quality.for_frames(2, 4).unwrap(), expected);
+        }
     }
 
     #[test]

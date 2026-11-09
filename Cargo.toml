@@ -23,6 +23,7 @@ rife-core = { path = "crates/rife-core" }
 indicatif = "0.18"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+shlex = "2"
 tempfile = "3"
 
 [profile.release]
