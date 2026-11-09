@@ -32,6 +32,7 @@ tempfile.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 fs2.workspace = true
+libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
+windows-sys = { version = "0.61", features = ["Win32_System_Console", "Win32_System_Diagnostics_Debug", "Win32_System_ErrorReporting"] }

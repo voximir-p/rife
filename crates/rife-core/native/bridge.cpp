@@ -7,17 +7,31 @@
 #include "settings.h"
 #include "gpu.h"
 #include <cstring>
+#include <exception>
 #include <memory>
 #include <new>
 #include <cmath>
 
+namespace {
+// Called only from catch handlers; preserve the backend's actual exception
+// message without allowing exceptions to cross the checked C ABI.
+int record_exception(const char* operation, int status) noexcept {
+    try { throw; }
+    catch (const std::exception& error) {
+        rife_record_native_error("%s: %s", operation, error.what());
+    }
+    catch (...) { rife_record_native_error("%s: unknown C++ exception", operation); }
+    return status;
+}
+}
+
 extern "C" {
 int rife_device_count() noexcept {
     try { ncnn::create_gpu_instance(); return ncnn::get_gpu_count(); }
-    catch (...) { return -1; }
+    catch (...) { return record_exception("Vulkan device enumeration failed", -1); }
 }
 int rife_default_device() noexcept {
-    try { return ncnn::get_default_gpu_index(); } catch (...) { return -2; }
+    try { return ncnn::get_default_gpu_index(); } catch (...) { return record_exception("default GPU selection failed", -2); }
 }
 int rife_device_name(int index, char* name, size_t capacity) noexcept {
     try {
@@ -28,7 +42,7 @@ int rife_device_name(int index, char* name, size_t capacity) noexcept {
         if (len >= capacity) return -2;
         memcpy(name, source, len + 1);
         return 0;
-    } catch (...) { return -3; }
+    } catch (...) { return record_exception("GPU name lookup failed", -3); }
 }
 int rife_create(const char* param, const unsigned char* weights, size_t weights_len,
                   int gpu, int padding, int threads, void** out,
@@ -45,7 +59,7 @@ int rife_create(const char* param, const unsigned char* weights, size_t weights_
         if (result != 0) return result;
         *out = model.release();
         return 0;
-    } catch (...) { return -100; }
+    } catch (...) { return record_exception("model loading failed", -100); }
 }
 int rife_process(void* handle, const unsigned char* a, const unsigned char* b,
                    unsigned char* out, int width, int height, float timestep,
@@ -63,9 +77,9 @@ int rife_process(void* handle, const unsigned char* a, const unsigned char* b,
         ncnn::Mat second(width, height, const_cast<unsigned char*>(b), (size_t)RIFE_RGB_CHANNELS, RIFE_RGB_CHANNELS);
         ncnn::Mat result(width, height, out, (size_t)RIFE_RGB_CHANNELS, RIFE_RGB_CHANNELS);
         return static_cast<RIFE*>(handle)->process(first, second, timestep, result);
-    } catch (...) { return -100; }
+    } catch (...) { return record_exception("interpolation failed", -100); }
 }
 void rife_destroy(void* handle) noexcept {
-    try { delete static_cast<RIFE*>(handle); } catch (...) {}
+    try { delete static_cast<RIFE*>(handle); } catch (...) { record_exception("model destruction failed", -100); }
 }
 }

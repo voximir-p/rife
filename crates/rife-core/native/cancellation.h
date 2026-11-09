@@ -18,6 +18,7 @@ private:
     const void* previous_context;
 };
 
-// Bounded thread-local diagnostics: no stderr traffic or shared model state.
+// Bounded thread-local diagnostics. Only an isolated CLI worker opts into
+// stderr mirroring; embedding applications retain the quiet default.
 extern "C" void rife_record_native_error(const char* format, ...) noexcept;
 void rife_clear_native_error() noexcept;

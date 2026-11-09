@@ -416,6 +416,7 @@ dependencies = [
  "dunce",
  "fs2",
  "indicatif",
+ "libc",
  "rife-core",
  "serde",
  "serde_json",

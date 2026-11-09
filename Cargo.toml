@@ -18,6 +18,7 @@ console = "0.16"
 ctrlc = "3"
 dunce = "1"
 fs2 = "0.4"
+libc = "0.2"
 rife-core = { path = "crates/rife-core" }
 indicatif = "0.18"
 serde = { version = "1", features = ["derive"] }

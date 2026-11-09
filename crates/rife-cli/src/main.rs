@@ -25,6 +25,7 @@ mod output_lock;
 mod paths;
 mod process;
 mod ui;
+mod worker;
 
 pub(crate) fn make_styles() -> ClapStyles {
     ClapStyles::styled()
@@ -130,6 +131,9 @@ fn parse_threshold(value: &str) -> std::result::Result<f64, String> {
 }
 
 fn main() {
+    if let Some(code) = worker::entry() {
+        std::process::exit(code);
+    }
     if std::env::args_os().len() == 1 {
         let mut command = Args::command();
         let _ = command.print_help();
@@ -153,7 +157,7 @@ fn main() {
         std::process::exit(130);
     }
     if let Err(error) = result {
-        ui::error(format_args!("{error:#}"));
+        ui::report_error(&error);
         std::process::exit(1);
     }
 }

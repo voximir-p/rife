@@ -178,12 +178,38 @@ pub(crate) fn warning(message: impl fmt::Display) {
     eprintln!("{prefix} {message}");
 }
 
+fn error_line(message: impl fmt::Display, palette: Palette) -> String {
+    let prefix = style("error:").red().bold().force_styling(palette.enabled);
+    format!("{prefix} {message}")
+}
+
 pub(crate) fn error(message: impl fmt::Display) {
-    let prefix = style("error:")
-        .red()
-        .bold()
-        .force_styling(Palette::stderr().enabled);
-    eprintln!("{prefix} {message}");
+    eprintln!("{}", error_line(message, Palette::stderr()));
+}
+
+pub(crate) fn report_error(failure: &anyhow::Error) {
+    if let Some(backend) = failure.downcast_ref::<crate::worker::Failure>()
+        && let Some(report) = backend.report()
+    {
+        let term = Term::stderr();
+        for line in backend_error_lines(report, backend, Palette::stderr()) {
+            write_line(&term, &line);
+        }
+    } else {
+        error(format_args!("{failure:#}"));
+    }
+}
+
+fn backend_error_lines(
+    report: &crate::worker::BackendReport,
+    summary: impl fmt::Display,
+    palette: Palette,
+) -> Vec<String> {
+    let mut output = vec![error_line(&report.reason, palette)];
+    output.extend(report.details.iter().cloned());
+    output.push(String::new());
+    output.push(error_line(summary, palette));
+    output
 }
 
 pub(crate) struct Ui {
@@ -1035,6 +1061,37 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn backend_errors_show_reason_then_raw_diagnostics_and_final_summary() {
+        let details = vec![
+            "[0 NVIDIA GeForce RTX 3050 Ti Laptop GPU] queueC=2[8] queueG=0[16] queueT=1[2]".into(),
+            "[0 NVIDIA GeForce RTX 3050 Ti Laptop GPU] bugsbn1=0 bugbilz=0 bugcopc=0 bugihfa=0".into(),
+            "[0 NVIDIA GeForce RTX 3050 Ti Laptop GPU] fp16-p/s/a=1/1/1 int8-p/s/a=1/1/1".into(),
+            "[0 NVIDIA GeForce RTX 3050 Ti Laptop GPU] subgroup=32 basic=1 vote=1 ballot=1 shuffle=1".into(),
+            "vkAllocateMemory failed -2".into(),
+        ];
+        let report = crate::worker::BackendReport {
+            reason: "segmentation fault (SIGSEGV)".into(),
+            details,
+        };
+        let plain =
+            backend_error_lines(&report, "native backend failed", Palette { enabled: false });
+        assert_eq!(plain[0], "error: segmentation fault (SIGSEGV)");
+        assert_eq!(&plain[1..6], report.details.as_slice());
+        assert_eq!(plain[6], "");
+        assert_eq!(plain[7], "error: native backend failed");
+        assert_eq!(plain.len(), 8);
+        let colored =
+            backend_error_lines(&report, "native backend failed", Palette { enabled: true });
+        assert!(colored[0].contains("\x1b[31m"));
+        assert!(colored[7].contains("\x1b[31m"));
+        assert_eq!(&colored[1..6], report.details.as_slice());
+        assert_eq!(
+            console::strip_ansi_codes(&colored.join("\n")),
+            plain.join("\n")
+        );
     }
 
     fn status(frames: u64, total: Option<u64>, width: usize, color: bool) -> String {

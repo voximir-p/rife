@@ -85,7 +85,9 @@ Repeat with each model directory being validated. Native inference coverage requ
 - `crates/rife-core/native` contains the C++/NCNN implementation and checked C ABI.
 - `third_party` holds pinned native dependency metadata and local fetched sources.
 
-Rust owns the public API and processing pipeline. The C++ backend is statically linked. Native build configuration and source overlays are maintained in `crates/rife-core/build.rs` and `crates/rife-core/native/CMakeLists.txt`.
+Rust owns the public API and processing pipeline. The CLI runs model loading and native interpolation in a supervised worker using the same executable. The parent owns FFmpeg processes, output locks, staging, final commit, and the terminal UI; fatal worker exits must pass through that parent's normal error and cleanup path. Raw frames flow through OS pipes, while structured worker status and a bounded diagnostic tail drive progress and backend error reports. Keep public `rife-core` inference independent of this CLI process protocol. The worker privately enables native diagnostic mirroring so messages survive a subsequent crash; embedding applications retain quiet thread-local diagnostics. C++ exception messages are recorded before returning through the C ABI, and model-destruction failures must prevent output commit.
+
+The C++ backend is statically linked. Native build configuration and source overlays are maintained in `crates/rife-core/build.rs` and `crates/rife-core/native/CMakeLists.txt`.
 
 ## Documentation
 

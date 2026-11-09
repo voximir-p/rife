@@ -7,15 +7,16 @@ use crate::{
     output_lock::OutputLock,
     paths,
     ui::Ui,
+    worker,
 };
 use anyhow::{Context, Result, anyhow, ensure};
-use rife_core::{CancellationToken, Engine, Frame, FrameSchedule, PlaybackOptions, StreamOptions};
+use rife_core::{CancellationToken, Frame, FrameSchedule, PlaybackOptions};
 use std::{
     collections::VecDeque,
     env, fmt, fs,
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufRead, BufReader, Read},
     path::Path,
-    process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
+    process::{Child, ChildStdout, Command, ExitStatus, Stdio},
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -51,7 +52,11 @@ impl std::error::Error for ProcessFailure {}
 fn attach_cleanup_failure(error: anyhow::Error, diagnostic: anyhow::Error) -> anyhow::Error {
     // A native failure stops the pipeline and closes/kills both FFmpeg pipes.
     // Their shutdown status and buffered warnings are secondary to that failure.
-    if error.downcast_ref::<rife_core::InferenceError>().is_some() {
+    if error.downcast_ref::<rife_core::InferenceError>().is_some()
+        || error
+            .downcast_ref::<worker::Failure>()
+            .is_some_and(worker::Failure::is_native)
+    {
         return error;
     }
 
@@ -69,7 +74,6 @@ fn attach_cleanup_failure(error: anyhow::Error, diagnostic: anyhow::Error) -> an
 /// reads/writes on cancellation while Rust waits for in-flight GPU work to finish.
 struct ManagedChild {
     child: Arc<Mutex<Child>>,
-    stdin: Option<ChildStdin>,
     stdout: Option<ChildStdout>,
     monitor: Option<JoinHandle<Result<ProcessExit>>>,
     diagnostics: Option<JoinHandle<VecDeque<String>>>,
@@ -84,7 +88,6 @@ impl ManagedChild {
         let mut child = command
             .spawn()
             .with_context(|| format!("could not launch {label}"))?;
-        let stdin = child.stdin.take();
         let stdout = child.stdout.take();
         let stderr = child.stderr.take().expect("configured stderr pipe");
         let diagnostics = thread::spawn(move || {
@@ -129,7 +132,6 @@ impl ManagedChild {
         });
         Ok(Self {
             child,
-            stdin,
             stdout,
             monitor: Some(monitor),
             diagnostics: Some(diagnostics),
@@ -139,7 +141,6 @@ impl ManagedChild {
     }
 
     fn finish(&mut self) -> Result<()> {
-        self.stdin.take();
         self.stdout.take();
         let exit = self
             .monitor
@@ -178,7 +179,6 @@ impl ManagedChild {
 
 impl Drop for ManagedChild {
     fn drop(&mut self) {
-        self.stdin.take();
         self.stdout.take();
         if let Ok(mut child) = self.child.lock() {
             let _ = child.kill();
@@ -207,12 +207,6 @@ impl ManagedChild {
         self.stdout
             .take()
             .expect("child stdout is configured as a pipe")
-    }
-
-    fn take_stdin(&mut self) -> ChildStdin {
-        self.stdin
-            .take()
-            .expect("child stdin is configured as a pipe")
     }
 }
 
@@ -260,55 +254,6 @@ pub(crate) fn read_output<T>(
     cancel.check()?;
     result?;
     Ok(output)
-}
-
-struct RawFrames<R> {
-    reader: R,
-    width: u32,
-    height: u32,
-    bytes: usize,
-    finished: bool,
-}
-impl<R: Read> RawFrames<R> {
-    fn new(reader: R, width: u32, height: u32) -> Result<Self> {
-        Ok(Self {
-            reader,
-            width,
-            height,
-            bytes: Frame::byte_len(width, height)?,
-            finished: false,
-        })
-    }
-}
-impl<R: Read> Iterator for RawFrames<R> {
-    type Item = Result<Frame>;
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.finished {
-            return None;
-        }
-        let mut pixels = Vec::new();
-        if let Err(error) = pixels.try_reserve_exact(self.bytes) {
-            self.finished = true;
-            return Some(Err(error).context("could not allocate decoded frame"));
-        }
-        pixels.resize(self.bytes, 0);
-        match self.reader.read_exact(&mut pixels[..1]) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
-                self.finished = true;
-                return None;
-            }
-            Err(error) => {
-                self.finished = true;
-                return Some(Err(error).context("could not read decoded frame"));
-            }
-        }
-        if let Err(error) = self.reader.read_exact(&mut pixels[1..]) {
-            self.finished = true;
-            return Some(Err(error).context("FFmpeg returned a truncated RGB frame"));
-        }
-        Some(Frame::new(self.width, self.height, pixels))
-    }
 }
 
 fn decode_command(ffmpeg: &Path, input: &Path, rate: Rate) -> Command {
@@ -456,17 +401,32 @@ pub(crate) fn process(args: Args, cancel: CancellationToken, ui: &Ui) -> Result<
         );
     }
     cancel.check()?;
-    let engine = {
+    // These guards stay in the supervising process if native code crashes.
+    let temp = paths::staging_directory(&parent)?;
+    let mut decoder = ManagedChild::spawn(
+        decode_command(&ffmpeg, &input, info.rate),
+        "FFmpeg decoding",
+        cancel.clone(),
+    )?;
+    let mut worker = {
         let mut loading = ui.loading(&format!("model `{}`", args.model));
-        let engine = Engine::new_with_cancellation(&model, args.engine_options(), &cancel)?;
+        let config = worker::Config::new(&args, (info.width, info.height), input_frames);
+        let mut worker = worker::NativeWorker::spawn(
+            &config,
+            &model,
+            temp.path(),
+            decoder.take_stdout(),
+            cancel.clone(),
+        )?;
+        let devices = worker.loaded()?;
         cancel.check()?;
         loading.finish();
-        engine
+        for name in devices {
+            ui.info("Device", name);
+        }
+        worker
     };
     cancel.check()?;
-    for device in engine.selected_devices() {
-        ui.info("Device", &device.name);
-    }
     for (label, rate) in [("Source", info.rate), ("Target", output_rate)] {
         ui.info(
             label,
@@ -478,9 +438,6 @@ pub(crate) fn process(args: Args, cancel: CancellationToken, ui: &Ui) -> Result<
             ),
         );
     }
-    // Declare staging before subprocesses so they are reaped before its files
-    // are removed, including on Windows and on early returns.
-    let temp = paths::staging_directory(&parent)?;
     let staged = dunce::simplified(temp.path()).join(format!("encoded.{extension}"));
     let chapter_metadata =
         if retiming && encode::supports_timed_metadata(&extension) && !info.chapters.is_empty() {
@@ -495,11 +452,6 @@ pub(crate) fn process(args: Args, cancel: CancellationToken, ui: &Ui) -> Result<
         } else {
             None
         };
-    let mut decoder = ManagedChild::spawn(
-        decode_command(&ffmpeg, &input, info.rate),
-        "FFmpeg decoding",
-        cancel.clone(),
-    )?;
     let mut command = encode::command(
         &ffmpeg,
         (info.width, info.height),
@@ -518,41 +470,27 @@ pub(crate) fn process(args: Args, cancel: CancellationToken, ui: &Ui) -> Result<
         &extension,
         &args,
     );
-    command.stdin(Stdio::piped()).stdout(Stdio::piped());
+    command
+        .stdin(Stdio::from(worker.take_stdout()))
+        .stdout(Stdio::piped());
     let mut encoder = ManagedChild::spawn(command, "FFmpeg encoding", cancel.clone())?;
-    let frames = RawFrames::new(decoder.take_stdout(), info.width, info.height)?;
-    let mut sink = encoder.take_stdin();
-    let estimated = Some(schedule.output_frames());
-    let mut progress = ui.progress(estimated);
+    let mut progress = ui.progress(Some(schedule.output_frames()));
     encoder.track_progress(progress.encoded_frames());
-    let result = engine.interpolate_stream(
-        frames,
-        StreamOptions {
-            threshold: args.threshold,
-            schedule: Some(schedule),
-            ..StreamOptions::default()
-        },
-        &cancel,
-        |frame| {
-            sink.write_all(frame.pixels())
-                .context("could not stream a frame to FFmpeg")
-        },
-        |done| progress.advance(done),
-    );
-    drop(sink); // EOF lets the encoder flush and finalize its container.
-    let result = result.and_then(|stats| {
-        cancel.check()?;
-        progress.saving(stats.output_frames);
-        decoder.finish()?;
-        encoder.finish()?;
-        cancel.check()?;
-        ensure!(
-            staged.is_file() && fs::metadata(&staged)?.len() > 0,
-            "FFmpeg did not produce a valid output"
-        );
-        paths::commit_output(&staged, &output, args.overwrite, &cancel)?;
-        Ok(stats)
-    });
+    let result = worker
+        .process(|done| progress.advance(done))
+        .and_then(|frames| {
+            cancel.check()?;
+            progress.saving(frames);
+            decoder.finish()?;
+            encoder.finish()?;
+            cancel.check()?;
+            ensure!(
+                staged.is_file() && fs::metadata(&staged)?.len() > 0,
+                "FFmpeg did not produce a valid output"
+            );
+            paths::commit_output(&staged, &output, args.overwrite, &cancel)?;
+            Ok(())
+        });
     match result {
         Ok(_) => {
             progress.finish();
@@ -562,6 +500,7 @@ pub(crate) fn process(args: Args, cancel: CancellationToken, ui: &Ui) -> Result<
             progress.abandon();
             // Watchdogs terminate both pipes even if a reader/writer was blocked.
             cancel.cancel();
+            worker.request_cancel();
             // A broken input/output pipe is often caused by FFmpeg rejecting a
             // codec or input. Preserve its bounded diagnostic tail, rather than
             // reporting only the secondary pipe error.
@@ -581,6 +520,7 @@ pub(crate) fn process(args: Args, cancel: CancellationToken, ui: &Ui) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     #[test]
     fn stdout_reader_child() {
         if env::var_os("RIFE_TEST_STDOUT_CHILD").is_none() {
@@ -723,17 +663,5 @@ mod tests {
             format!("{error:#}"),
             format!("{heading}: NCNN interpolation failed (code -3)")
         );
-    }
-
-    #[test]
-    fn raw_reader_distinguishes_clean_eof_from_truncated_frames() {
-        let mut reader = RawFrames::new([0u8; 24].as_slice(), 2, 2).unwrap();
-        assert!(reader.next().unwrap().is_ok());
-        assert!(reader.next().unwrap().is_ok());
-        assert!(reader.next().is_none());
-        let mut reader = RawFrames::new([0u8; 13].as_slice(), 2, 2).unwrap();
-        assert!(reader.next().unwrap().is_ok());
-        assert!(reader.next().unwrap().is_err());
-        assert!(reader.next().is_none());
     }
 }
