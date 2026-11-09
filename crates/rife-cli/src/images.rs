@@ -108,6 +108,45 @@ impl Sequence {
         name
     }
 
+    fn matches(&self, filename: &OsStr) -> bool {
+        let bytes = filename.as_encoded_bytes();
+        let Some(digits) = bytes
+            .strip_prefix(self.prefix.as_encoded_bytes())
+            .and_then(|rest| rest.strip_suffix(self.suffix.as_encoded_bytes()))
+        else {
+            return false;
+        };
+        let Some(number) = std::str::from_utf8(digits)
+            .ok()
+            .filter(|text| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()))
+            .and_then(|text| text.parse::<u64>().ok())
+        else {
+            return false;
+        };
+        number > 0 && number <= i32::MAX as u64 && self.filename(number) == filename
+    }
+
+    pub(crate) fn preflight(
+        &self,
+        parent: &Path,
+        input: &Path,
+        overwrite: bool,
+        cancel: &CancellationToken,
+    ) -> Result<()> {
+        cancel.check()?;
+        // Validate the first possible filename even when the directory is empty
+        // (for example, excessive padding may exceed filesystem name limits).
+        paths::validate_output(input, &parent.join(self.filename(1)), overwrite)?;
+        for entry in fs::read_dir(parent).context("could not inspect image output directory")? {
+            cancel.check()?;
+            let entry = entry?;
+            if self.matches(&entry.file_name()) {
+                paths::validate_output(input, &entry.path(), overwrite)?;
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn validate(
         &self,
         parent: &Path,
@@ -116,14 +155,19 @@ impl Sequence {
         overwrite: bool,
         cancel: &CancellationToken,
     ) -> Result<()> {
-        ensure!(
-            frames <= i32::MAX as u64,
-            "image sequence has too many frames for FFmpeg"
-        );
+        Self::validate_count(frames)?;
         for number in 1..=frames {
             cancel.check()?;
             paths::validate_output(input, &parent.join(self.filename(number)), overwrite)?;
         }
+        Ok(())
+    }
+
+    pub(crate) fn validate_count(frames: u64) -> Result<()> {
+        ensure!(
+            frames <= i32::MAX as u64,
+            "image sequence has too many frames for FFmpeg"
+        );
         Ok(())
     }
 
@@ -355,6 +399,59 @@ mod tests {
         assert_eq!(
             Sequence::staged_pattern(Path::new("a%b"), "png"),
             Path::new("a%%b/frame_%d.png")
+        );
+    }
+
+    #[test]
+    fn preflight_finds_sparse_existing_sequences_and_ignores_nonmatching_names() {
+        let root = tempfile::tempdir().unwrap();
+        let input = root.path().join("input.mp4");
+        fs::write(&input, "source").unwrap();
+        let pattern = sequence("视%%频_%03d.png");
+        let cancel = CancellationToken::default();
+        for name in [
+            "视%频_000.png",
+            "视%频_7.png",
+            "视%频_0007.png",
+            "视%频_123.jpg",
+            "other_123.png",
+        ] {
+            fs::write(root.path().join(name), "unrelated").unwrap();
+        }
+        pattern
+            .preflight(root.path(), &input, false, &cancel)
+            .unwrap();
+        let existing = root.path().join("视%频_1234.png");
+        fs::write(&existing, "previous image").unwrap();
+        let error = pattern
+            .preflight(root.path(), &input, false, &cancel)
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "output already exists (pass --overwrite to replace it)"
+        );
+        pattern
+            .preflight(root.path(), &input, true, &cancel)
+            .unwrap();
+        assert!(
+            pattern
+                .preflight(root.path(), &existing, true, &cancel)
+                .is_err()
+        );
+        fs::remove_file(&existing).unwrap();
+        fs::create_dir(&existing).unwrap();
+        assert_eq!(
+            pattern
+                .preflight(root.path(), &input, true, &cancel)
+                .unwrap_err()
+                .to_string(),
+            "output path is not a file"
+        );
+        cancel.cancel();
+        assert!(
+            pattern
+                .preflight(root.path(), &input, true, &cancel)
+                .is_err()
         );
     }
 

@@ -103,9 +103,11 @@ Use exactly one `%d` or `%0Nd` placeholder in the output filename, following [FF
 
 FFmpeg selects the image encoder, pixel format, and quality defaults from the extension, unless `--video-codec` overrides the encoder. No video CRF, bitrate, chroma-subsampling, or padding presets are applied. Lossless RGB formats such as PNG, BMP, TIFF, and PPM preserve the interpolated RGB8 pixels; lossy formats such as JPEG use FFmpeg's defaults. Images contain no audio, subtitles, chapters, or attachments, so `--crf` and `--audio-codec` do not apply to image sequences. The existing RGB8/HDR limitation still applies.
 
-Frames are saved to their final names only after encoding succeeds. Existing numbered files require `--overwrite`; unrelated files and frames beyond the new sequence's range are left untouched. Failed or cancelled saves roll back frames already moved into place. Image-sequence jobs writing to the same directory share an output lock.
+Frames are saved to their final names only after encoding succeeds. Any existing numbered file matching the pattern requires `--overwrite`, even if earlier frame numbers are missing. With `--overwrite`, unrelated files and frames beyond the new sequence's range are left untouched. Failed or cancelled saves roll back frames already moved into place. Image-sequence jobs writing to the same directory share an output lock.
 
 ### Progress and output safety
+
+Output conflicts and invalid argument combinations are checked before frame counting. Encoding settings are checked with a temporary sample before counting or loading the model. Errors that depend on the decoded frame count or native model initialization are reported when those stages run; output paths are checked again before saving.
 
 Temporary processing files use the OS temporary directory. If rife cannot create a temporary folder there, it uses the output's parent directory. Finished outputs are transferred to the output location after encoding succeeds, including when that location is on another drive.
 

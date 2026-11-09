@@ -41,6 +41,11 @@ pub(crate) fn find_model(root: &Path, model: &Model) -> Result<PathBuf> {
     let dir = model.directory();
     let path = root.join(config::MODELS_DIRECTORY).join(dir);
     if path.join(Model::PARAM_FILE).is_file() && path.join(Model::WEIGHTS_FILE).is_file() {
+        for filename in [Model::PARAM_FILE, Model::WEIGHTS_FILE] {
+            let file = fs::File::open(path.join(filename))
+                .with_context(|| format!("could not read model file {filename}"))?;
+            ensure!(file.metadata()?.len() > 0, "model file {filename} is empty");
+        }
         return Ok(path);
     }
 
@@ -52,7 +57,10 @@ pub(crate) fn find_model(root: &Path, model: &Model) -> Result<PathBuf> {
     )
 }
 
-pub(crate) fn resolve_paths(args: &Args) -> Result<(PathBuf, PathBuf, PathBuf)> {
+pub(crate) fn resolve_paths(
+    args: &Args,
+    cancel: &CancellationToken,
+) -> Result<(PathBuf, PathBuf, PathBuf)> {
     let input = dunce::canonicalize(&args.input)
         .with_context(|| format!("input does not exist: {}", args.input.display()))?;
     ensure!(input.is_file(), "input must be a file");
@@ -71,7 +79,9 @@ pub(crate) fn resolve_paths(args: &Args) -> Result<(PathBuf, PathBuf, PathBuf)> 
         output.extension().is_some(),
         "output must have a file extension"
     );
-    if Sequence::parse(&output)?.is_none() {
+    if let Some(sequence) = Sequence::parse(&output)? {
+        sequence.preflight(&parent, &input, args.overwrite, cancel)?;
+    } else {
         validate_output(&input, &output, args.overwrite)?;
     }
     Ok((input, output, parent))
@@ -285,9 +295,11 @@ mod tests {
                 .join(config::MODELS_DIRECTORY)
                 .join(model.directory());
             fs::create_dir_all(&directory).unwrap();
-            fs::write(directory.join(Model::PARAM_FILE), []).unwrap();
+            fs::write(directory.join(Model::PARAM_FILE), "parameters").unwrap();
             assert!(find_model(runtime.path(), &model).is_err());
             fs::write(directory.join(Model::WEIGHTS_FILE), []).unwrap();
+            assert!(find_model(runtime.path(), &model).is_err());
+            fs::write(directory.join(Model::WEIGHTS_FILE), [1]).unwrap();
             assert_eq!(find_model(runtime.path(), &model).unwrap(), directory);
         }
     }
@@ -306,12 +318,12 @@ mod tests {
         ])
         .unwrap();
         args.overwrite = true;
-        assert!(resolve_paths(&args).is_err());
+        assert!(resolve_paths(&args, &CancellationToken::default()).is_err());
         args.output = output;
         args.overwrite = false;
-        assert!(resolve_paths(&args).is_err());
+        assert!(resolve_paths(&args, &CancellationToken::default()).is_err());
         args.overwrite = true;
-        assert!(resolve_paths(&args).is_ok());
+        assert!(resolve_paths(&args, &CancellationToken::default()).is_ok());
         assert_eq!(fs::read_to_string(input).unwrap(), "original");
     }
     #[test]

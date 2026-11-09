@@ -185,7 +185,6 @@ fn encode_fixture(
         &ffmpeg,
         (16, 16),
         input,
-        output,
         encode::Timing {
             rate,
             video_quality: encode::VideoQuality::FormatDefault,
@@ -199,6 +198,7 @@ fn encode_fixture(
         &args,
     );
     let mut child = command
+        .arg(output)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())

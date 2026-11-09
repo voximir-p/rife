@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Reject existing image sequences and invalid output settings before counting frames or loading the model.
 - Report native backend crashes with formatted error details, clean up temporary files and output locks, and preserve existing outputs.
 
 ## [0.1.2] - 2026-11-09

@@ -39,6 +39,30 @@ pub(crate) enum VideoQuality {
     FormatDefault,
 }
 
+pub(crate) enum QualityPlan {
+    Fixed(VideoQuality),
+    SourceBitrate(u64),
+}
+
+impl QualityPlan {
+    pub(crate) fn for_validation(&self) -> VideoQuality {
+        match self {
+            Self::Fixed(quality) => quality.clone(),
+            // The final bitrate requires the actual normalized frame count.
+            Self::SourceBitrate(_) => VideoQuality::FormatDefault,
+        }
+    }
+
+    pub(crate) fn for_frames(&self, input: u64, output: u64) -> anyhow::Result<VideoQuality> {
+        match self {
+            Self::Fixed(quality) => Ok(quality.clone()),
+            Self::SourceBitrate(bitrate) => Ok(VideoQuality::Bitrate(scale_fallback_bitrate(
+                *bitrate, input, output,
+            )?)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Container {
     Mp4,
@@ -179,22 +203,20 @@ fn append_video_options(
 pub(crate) struct VideoQualityInput<'a> {
     pub source_crf: Option<&'a str>,
     pub source_bitrate: Option<u64>,
-    pub input_frames: u64,
-    pub output_frames: u64,
 }
 
-pub(crate) fn select_video_quality(
+pub(crate) fn prepare_video_quality(
     ffmpeg: &Path,
     extension: &str,
     args: &Args,
     input: VideoQualityInput<'_>,
     cancel: &CancellationToken,
-) -> anyhow::Result<VideoQuality> {
+) -> anyhow::Result<QualityPlan> {
     let container = Container::from_extension(extension);
     if (container.has_video_only_output() && args.video_codec.is_none())
         || container.uses_gif_palette(args.video_codec.as_deref())
     {
-        return Ok(VideoQuality::FormatDefault);
+        return Ok(QualityPlan::Fixed(VideoQuality::FormatDefault));
     }
 
     let crf = args
@@ -218,13 +240,13 @@ pub(crate) fn select_video_quality(
         let source_bitrate = input
             .source_bitrate
             .context("could not determine the source video bitrate for the encoder fallback")?;
-        return Ok(VideoQuality::Bitrate(scale_fallback_bitrate(
-            source_bitrate,
-            input.input_frames,
-            input.output_frames,
-        )?));
+        return Ok(QualityPlan::SourceBitrate(source_bitrate));
     }
-    Ok(VideoQuality::Crf(crf))
+    Ok(QualityPlan::Fixed(VideoQuality::Crf(crf)))
+}
+
+pub(crate) fn carries_audio(extension: &str) -> bool {
+    !Container::from_extension(extension).has_video_only_output()
 }
 
 fn query_muxer_video_codec(
@@ -450,7 +472,6 @@ fn raw_video_command(ffmpeg: &Path, dimensions: (u32, u32), output_rate: Rate) -
 pub(crate) fn image_command(
     ffmpeg: &Path,
     dimensions: (u32, u32),
-    output: &Path,
     rate: Rate,
     codec: Option<&str>,
 ) -> Command {
@@ -470,7 +491,6 @@ pub(crate) fn image_command(
     }
     // Pass packed RGB directly to the image encoder. FFmpeg chooses its codec,
     // supported pixel format and quality defaults; video presets do not apply.
-    cmd.arg(output);
     cmd
 }
 
@@ -478,7 +498,6 @@ pub(crate) fn command(
     ffmpeg: &Path,
     dimensions: (u32, u32),
     input: &Path,
-    staged_output: &Path,
     timing: Timing,
     ext: &str,
     args: &Args,
@@ -563,7 +582,6 @@ pub(crate) fn command(
         "-enc_time_base:v",
         &format!("{}:{}", output_rate.den, output_rate.num),
     ]);
-    cmd.arg(staged_output);
     cmd
 }
 
@@ -653,25 +671,24 @@ mod tests {
             let args = Args::try_parse_from(arguments).unwrap();
             // GIF quality must not depend on source bitrate or launching an
             // encoder query, even when its encoder is selected explicitly.
-            let quality = select_video_quality(
+            let quality = prepare_video_quality(
                 Path::new("missing-ffmpeg"),
                 "gif",
                 &args,
                 VideoQualityInput {
                     source_crf: None,
                     source_bitrate: None,
-                    input_frames: 34,
-                    output_frames: 136,
                 },
                 &CancellationToken::default(),
             )
+            .unwrap()
+            .for_frames(34, 136)
             .unwrap();
             assert_eq!(quality, VideoQuality::FormatDefault);
             let cmd = command(
                 Path::new("ffmpeg"),
                 (64, 64),
                 Path::new("input.mp4"),
-                Path::new("out.gif"),
                 Timing {
                     rate: Rate { num: 30, den: 1 },
                     video_quality: quality,

@@ -15,7 +15,7 @@ use rife_core::{CancellationToken, Frame, FrameSchedule, PlaybackOptions};
 use std::{
     collections::VecDeque,
     env, fmt, fs,
-    io::{BufRead, BufReader, Read},
+    io::{BufRead, BufReader, Read, Write},
     path::Path,
     process::{Child, ChildStdout, Command, ExitStatus, Stdio},
     sync::{
@@ -359,12 +359,45 @@ fn count_normalized_frames(
     }
 }
 
+fn validate_encoding(
+    mut command: Command,
+    dimensions: (u32, u32),
+    cancel: &CancellationToken,
+) -> Result<()> {
+    command.stdin(Stdio::piped()).stdout(Stdio::null());
+    let mut child = ManagedChild::spawn(command, "FFmpeg encoding", cancel.clone())?;
+    let mut pipe = child
+        .child
+        .lock()
+        .map_err(|_| anyhow!("child process lock poisoned"))?
+        .stdin
+        .take()
+        .expect("configured validation input pipe");
+    let write = (|| -> Result<()> {
+        let mut remaining = Frame::byte_len(dimensions.0, dimensions.1)?;
+        let zeros = [0u8; 64 * 1024];
+        while remaining > 0 {
+            cancel.check()?;
+            let count = remaining.min(zeros.len());
+            pipe.write_all(&zeros[..count])
+                .context("could not validate output encoding")?;
+            remaining -= count;
+        }
+        Ok(())
+    })();
+    drop(pipe);
+    let finish = child.finish();
+    cancel.check()?;
+    finish?;
+    write
+}
+
 pub(crate) fn process(args: Args, cancel: CancellationToken, ui: &Ui) -> Result<()> {
     let exe = env::current_exe().context("unable to locate the current executable")?;
     let root = dunce::simplified(&exe)
         .parent()
         .context("executable has no parent directory")?;
-    let (input, output, parent) = paths::resolve_paths(&args)?;
+    let (input, output, parent) = paths::resolve_paths(&args, &cancel)?;
     let sequence = Sequence::parse(&output)?;
     let lock_path = if sequence.is_some() {
         Sequence::lock_path(&parent)
@@ -375,7 +408,9 @@ pub(crate) fn process(args: Args, cancel: CancellationToken, ui: &Ui) -> Result<
         ui.status("Waiting", format_args!("for locked `{}`", output.display()));
     })?;
     // The previous writer may have committed a file while this run was waiting.
-    if sequence.is_none() {
+    if let Some(sequence) = &sequence {
+        sequence.preflight(&parent, &input, args.overwrite, &cancel)?;
+    } else {
         paths::validate_output(&input, &output, args.overwrite)?;
     }
     let ffmpeg = paths::tool_path(root, "ffmpeg")?;
@@ -386,13 +421,137 @@ pub(crate) fn process(args: Args, cancel: CancellationToken, ui: &Ui) -> Result<
         .unwrap()
         .to_string_lossy()
         .to_ascii_lowercase();
-    let info = media::probe(&ffprobe, &input, &cancel, sequence.is_none())?;
     let playback = PlaybackOptions {
         fps_scale: args.fps_scale,
         speed: args.speed,
     };
+    // Reject unrepresentable ratios and worker layouts before inspecting media.
+    let minimum_schedule = FrameSchedule::for_playback(1, playback)?;
     let (scale_num, scale_den) = playback.fps_ratio()?;
+    let device_count = match &args.gpu {
+        rife_core::DeviceSelection::Auto => 1,
+        rife_core::DeviceSelection::Ids(ids) => ids.len(),
+    };
+    args.jobs.clone().for_devices(device_count)?;
+    if sequence.is_some() {
+        Sequence::validate_count(minimum_schedule.output_frames())?;
+    }
+    let retiming = encode::requires_retiming(args.speed);
+    let carries_audio = sequence.is_none() && encode::carries_audio(&extension);
+    ensure!(
+        !carries_audio || !retiming || args.audio_codec.as_deref() != Some("copy"),
+        "audio codec copy cannot be used when playback speed changes"
+    );
+    // Keep all staging in the parent so even an early backend failure cleans up.
+    let temp = paths::staging_directory(&parent)?;
+    let staged_images = dunce::simplified(temp.path()).join("frames");
+    let staged = if sequence.is_some() {
+        fs::create_dir(&staged_images)?;
+        Sequence::staged_pattern(&staged_images, &extension)
+    } else {
+        dunce::simplified(temp.path()).join(format!("encoded.{extension}"))
+    };
+    let info = media::probe(&ffprobe, &input, &cancel, sequence.is_none())?;
     let output_rate = info.rate.scaled(scale_num, scale_den)?;
+    let audio_is_encoded = carries_audio
+        && args
+            .audio_codec
+            .as_deref()
+            .map_or_else(|| retiming, |codec| codec != "copy");
+    ensure!(
+        !audio_is_encoded || info.audio_bitrates.iter().all(Option::is_some),
+        "could not determine every source audio bitrate"
+    );
+    let quality = if sequence.is_some() {
+        encode::QualityPlan::Fixed(encode::VideoQuality::FormatDefault)
+    } else {
+        encode::prepare_video_quality(
+            &ffmpeg,
+            &extension,
+            &args,
+            encode::VideoQualityInput {
+                source_crf: info.source_crf.as_deref(),
+                source_bitrate: info.video_bitrate,
+            },
+            &cancel,
+        )?
+    };
+    let chapter_metadata = if sequence.is_none()
+        && retiming
+        && encode::supports_timed_metadata(&extension)
+        && !info.chapters.is_empty()
+    {
+        let metadata = dunce::simplified(temp.path()).join("chapters.ffmetadata");
+        // Effective speed can only decrease when whole frames round up, so
+        // malformed chapters or timestamps already too large at the requested
+        // speed can be rejected before counting. Rewrite with exact timing later.
+        chapters::write_retimed(
+            &metadata,
+            &info.chapters,
+            info.source_start_time,
+            args.speed,
+        )?;
+        Some(metadata)
+    } else {
+        None
+    };
+    let make_command = |timing: encode::Timing| {
+        if sequence.is_some() {
+            encode::image_command(
+                &ffmpeg,
+                (info.width, info.height),
+                timing.rate,
+                args.video_codec.as_deref(),
+            )
+        } else {
+            encode::command(
+                &ffmpeg,
+                (info.width, info.height),
+                &input,
+                timing,
+                &extension,
+                &args,
+            )
+        }
+    };
+    // Ask the supplied FFmpeg to validate the actual muxer/encoder settings.
+    // A single blank RGB frame avoids hard-coded codec/extension allowlists and
+    // zero-frame false failures from GIF/WebP encoders. No user files are touched.
+    let check_directory = dunce::simplified(temp.path()).join("check");
+    fs::create_dir(&check_directory)?;
+    let check_output = if sequence.is_some() {
+        Sequence::staged_pattern(&check_directory, &extension)
+    } else {
+        check_directory.join(format!("encoded.{extension}"))
+    };
+    let mut check_command = make_command(encode::Timing {
+        rate: output_rate,
+        video_quality: quality.for_validation(),
+        speed: args.speed,
+        duration: 0.1,
+        preserve_source_timing: !retiming,
+        source_audio_bitrates: info.audio_bitrates.clone(),
+        chapter_metadata: chapter_metadata.clone(),
+    });
+    check_command
+        .args([
+            "-frames:v",
+            "1",
+            "-frames:a",
+            "1",
+            "-frames:s",
+            "1",
+            "-t",
+            "0.1",
+        ])
+        .arg(check_output);
+    validate_encoding(check_command, (info.width, info.height), &cancel)?;
+    fs::remove_dir_all(check_directory).context("could not clean up output validation files")?;
+    if info.hdr {
+        crate::ui::warning(
+            "HDR transfer detected; the RGB8 interpolation pipeline does not preserve HDR.",
+        );
+    }
     for (label, rate) in [("Source", info.rate), ("Target", output_rate)] {
         ui.info(
             label,
@@ -415,43 +574,28 @@ pub(crate) fn process(args: Args, cancel: CancellationToken, ui: &Ui) -> Result<
             &cancel,
         )?;
     }
-    let video_quality = if sequence.is_some() {
-        encode::VideoQuality::FormatDefault
-    } else {
-        encode::select_video_quality(
-            &ffmpeg,
-            &extension,
-            &args,
-            encode::VideoQualityInput {
-                source_crf: info.source_crf.as_deref(),
-                source_bitrate: info.video_bitrate,
-                input_frames,
-                output_frames: schedule.output_frames(),
-            },
-            &cancel,
-        )?
-    };
     // Whole-frame rounding can extend the final interval. Match audio, subtitles,
     // and chapters to the actual video duration.
     let media_speed = args.fps_scale * input_frames as f64 / schedule.output_frames() as f64;
-    let retiming = encode::requires_retiming(args.speed);
-    let audio_is_encoded = sequence.is_none()
-        && args
-            .audio_codec
-            .as_deref()
-            .map_or_else(|| retiming, |codec| codec != "copy");
-    ensure!(
-        !audio_is_encoded || info.audio_bitrates.iter().all(Option::is_some),
-        "could not determine every source audio bitrate"
-    );
-    if info.hdr {
-        crate::ui::warning(
-            "HDR transfer detected; the RGB8 interpolation pipeline does not preserve HDR.",
-        );
+    if let Some(metadata) = &chapter_metadata {
+        chapters::write_retimed(
+            metadata,
+            &info.chapters,
+            info.source_start_time,
+            media_speed,
+        )?;
     }
+    let mut command = make_command(encode::Timing {
+        rate: output_rate,
+        video_quality: quality.for_frames(input_frames, schedule.output_frames())?,
+        speed: media_speed,
+        duration: schedule.output_frames() as f64 * output_rate.den as f64 / output_rate.num as f64,
+        preserve_source_timing: !retiming,
+        source_audio_bitrates: info.audio_bitrates.clone(),
+        chapter_metadata,
+    });
+    command.arg(&staged);
     cancel.check()?;
-    // These guards stay in the supervising process if native code crashes.
-    let temp = paths::staging_directory(&parent)?;
     let mut decoder = ManagedChild::spawn(
         decode_command(&ffmpeg, &input, info.rate),
         "FFmpeg decoding",
@@ -476,57 +620,6 @@ pub(crate) fn process(args: Args, cancel: CancellationToken, ui: &Ui) -> Result<
         worker
     };
     cancel.check()?;
-    let staged_images = dunce::simplified(temp.path()).join("frames");
-    let staged = if sequence.is_some() {
-        fs::create_dir(&staged_images)?;
-        Sequence::staged_pattern(&staged_images, &extension)
-    } else {
-        dunce::simplified(temp.path()).join(format!("encoded.{extension}"))
-    };
-    let chapter_metadata = if sequence.is_none()
-        && retiming
-        && encode::supports_timed_metadata(&extension)
-        && !info.chapters.is_empty()
-    {
-        let metadata = dunce::simplified(temp.path()).join("chapters.ffmetadata");
-        chapters::write_retimed(
-            &metadata,
-            &info.chapters,
-            info.source_start_time,
-            media_speed,
-        )?;
-        Some(metadata)
-    } else {
-        None
-    };
-    let mut command = if sequence.is_some() {
-        encode::image_command(
-            &ffmpeg,
-            (info.width, info.height),
-            &staged,
-            output_rate,
-            args.video_codec.as_deref(),
-        )
-    } else {
-        encode::command(
-            &ffmpeg,
-            (info.width, info.height),
-            &input,
-            &staged,
-            encode::Timing {
-                rate: output_rate,
-                video_quality,
-                speed: media_speed,
-                duration: schedule.output_frames() as f64 * output_rate.den as f64
-                    / output_rate.num as f64,
-                preserve_source_timing: !retiming,
-                source_audio_bitrates: info.audio_bitrates.clone(),
-                chapter_metadata,
-            },
-            &extension,
-            &args,
-        )
-    };
     command
         .stdin(Stdio::from(worker.take_stdout()))
         .stdout(Stdio::piped());
