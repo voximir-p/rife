@@ -121,7 +121,7 @@ Output conflicts and invalid argument combinations are checked before frame coun
 
 Temporary processing files use the OS temporary directory. If rife cannot create a temporary folder there, it uses the output's parent directory. Finished outputs are transferred to the output location after encoding succeeds, including when that location is on another drive.
 
-Native and FFmpeg backend failures show the actual failure reason and raw backend diagnostics, followed by a blank line and `error: native backend failed`. Failed jobs clean up their temporary files and output locks and preserve existing outputs.
+Backend failures show the actual failure reason and raw diagnostics, followed by a blank line. FFmpeg and FFprobe failures end with `error: media processing failed`; native inference failures end with `error: native backend failed`. Failed jobs clean up their temporary files and output locks and preserve existing outputs.
 
 Verbose output shows Source and Target first, followed by frame counting, model loading, Device, and processing. Counting shows the number of video frames counted so far, then changes to green `Counted N frames in total` when finished. Loading changes to green Loaded when the model is ready. When interpolation ends, the Processed line reports its elapsed time. A separate Saving progress bar, in the same color as Processing, tracks output encoding with its own timer. The final green Saved line reports the saving time; both summaries remain visible. Live status rows keep the cursor at the start of the row and disappear on Ctrl+C while leaving the terminal’s own cancellation indicator and cursor position unchanged. Redirected logs contain completed messages rather than live progress.
 

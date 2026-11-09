@@ -193,17 +193,20 @@ pub(crate) fn report_error(failure: &anyhow::Error) {
             reason: backend.to_string(),
             details: Vec::new(),
         };
-        report_backend_error(backend.report().unwrap_or(&fallback));
+        report_backend_error(
+            backend.report().unwrap_or(&fallback),
+            "native backend failed",
+        );
     } else if let Some(backend) = failure.downcast_ref::<crate::process::ProcessFailure>() {
-        report_backend_error(&backend.report());
+        report_backend_error(&backend.report(), "media processing failed");
     } else {
         error(format_args!("{failure:#}"));
     }
 }
 
-fn report_backend_error(report: &crate::worker::BackendReport) {
+fn report_backend_error(report: &crate::worker::BackendReport, summary: &str) {
     let term = Term::stderr();
-    for line in backend_error_lines(report, "native backend failed", Palette::stderr()) {
+    for line in backend_error_lines(report, summary, Palette::stderr()) {
         write_line(&term, &line);
     }
 }

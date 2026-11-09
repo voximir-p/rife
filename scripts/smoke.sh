@@ -137,7 +137,7 @@ with tempfile.TemporaryDirectory(prefix="rife-smoke-", dir=root / "target") as d
     for option in ["-rife_missing_option 1", "-crf NaN", "-a:b 10k"]:
         failed_option = test_root / "bad-option.mp4"
         log = rife("-i", source, "-m", "rife-v4.26", "-v", "-e", option, failed_option, succeeds=False)
-        assert log.startswith("error:") and log.endswith("\n\nerror: native backend failed\n"), log
+        assert log.startswith("error:") and log.endswith("\n\nerror: media processing failed\n"), log
         assert not re.search(r"^ *(?:Source|Target|Counted|Loaded|Processed|Saved)\b", log, re.M), log
         assert not failed_option.exists()
     for removed_flag in ["-c", "--crf"]:
@@ -195,7 +195,7 @@ with tempfile.TemporaryDirectory(prefix="rife-smoke-", dir=root / "target") as d
         assert log == "error: output already exists (pass --overwrite to replace it)\n", log
         log = rife("-i", source, "-m", "rife-v4.26", "-f", "2", "-y",
                    "--video-codec", "rife_missing_encoder", pattern, succeeds=False)
-        assert "rife_missing_encoder" in log and log.endswith("\n\nerror: native backend failed\n"), log
+        assert "rife_missing_encoder" in log and log.endswith("\n\nerror: media processing failed\n"), log
         assert not re.search(r"^ *(?:Source|Target|Counted|Loaded|Processed|Saved)\b", log, re.M), log
         assert {path.name: path.read_bytes() for path in directory.iterdir()} == before
         # A successful replacement keeps the same numbering and raw RGB values.
@@ -247,10 +247,10 @@ with tempfile.TemporaryDirectory(prefix="rife-smoke-", dir=root / "target") as d
     ]:
         log = rife("-i", source, "-m", "rife-v4.26", "-v", *options,
                    test_root / f"invalid-early.{extension}", succeeds=False)
-        assert log.startswith("error:") and log.endswith("\n\nerror: native backend failed\n"), log
+        assert log.startswith("error:") and log.endswith("\n\nerror: media processing failed\n"), log
         assert not re.search(r"^ *(?:Source|Target|Counted|Loaded|Processed|Saved)\b", log, re.M), log
     log = rife("-i", corrupt, test_root / "never.mp4", succeeds=False)
-    assert "FFprobe failed" in log and log.endswith("\n\nerror: native backend failed\n"), log
+    assert "FFprobe failed" in log and log.endswith("\n\nerror: media processing failed\n"), log
     check_cleanup()
     print("Passed: escaped/unpadded patterns, odd dimensions, speed-adjusted image schedules, JPEG defaults and probe errors.", flush=True)
     default_gif = test_root / "default.gif"
@@ -262,7 +262,7 @@ with tempfile.TemporaryDirectory(prefix="rife-smoke-", dir=root / "target") as d
     failed = test_root / "encoder-failure.mp4"
     log = rife("-i", source, "-m", "rife-v4.26", "--video-codec", "rife_missing_encoder", "-y", failed, succeeds=False)
     assert re.search(r"^error:", log, re.M) and "rife_missing_encoder" in log and not failed.exists(), log
-    assert log.endswith("\n\nerror: native backend failed\n"), log
+    assert log.endswith("\n\nerror: media processing failed\n"), log
     assert "Broken pipe" not in log and "FFmpeg decoding failed" not in log, log
     assert not re.search(r"^ *(?:Source|Target|Counted|Loaded|Processed|Saved)\b", log, re.M), log
     check_cleanup()
