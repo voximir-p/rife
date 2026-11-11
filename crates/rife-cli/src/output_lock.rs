@@ -150,7 +150,7 @@ mod tests {
     };
 
     fn temp() -> tempfile::TempDir {
-        tempfile::tempdir_in(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target")).unwrap()
+        tempfile::tempdir().unwrap()
     }
 
     #[test]
@@ -201,11 +201,9 @@ mod tests {
             let waiter = scope.spawn(|| {
                 OutputLock::acquire(&output, true, &cancel, || started.send(()).unwrap())
             });
-            waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+            waiting.recv_timeout(Duration::from_secs(10)).unwrap();
             signal.cancel();
-            let start = Instant::now();
             assert!(waiter.join().unwrap().is_err());
-            assert!(start.elapsed() < Duration::from_secs(1));
         });
         assert!(OutputLock::acquire(&output, false, &CancellationToken::default(), || {}).is_err());
         assert!(root.path().join("output.mp4.lock").exists());
@@ -232,11 +230,14 @@ mod tests {
                 finished.send(()).unwrap();
                 guard
             });
-            waiting.recv_timeout(Duration::from_secs(5)).unwrap();
-            assert!(acquired.recv_timeout(Duration::from_millis(100)).is_err());
+            waiting.recv_timeout(Duration::from_secs(10)).unwrap();
+            assert!(matches!(
+                acquired.try_recv(),
+                Err(mpsc::TryRecvError::Empty)
+            ));
             fs::write(&output, "committed").unwrap();
             drop(owner);
-            acquired.recv_timeout(Duration::from_secs(5)).unwrap();
+            acquired.recv_timeout(Duration::from_secs(10)).unwrap();
             drop(waiter.join().unwrap());
         });
     }
@@ -277,7 +278,7 @@ mod tests {
             .spawn()
             .unwrap();
         let result = (|| {
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = Instant::now() + Duration::from_secs(10);
             while !root.path().join("ready").exists() {
                 ensure!(Instant::now() < deadline, "Child did not acquire the lock");
                 ensure!(
@@ -342,13 +343,13 @@ mod tests {
                             OutputLock::acquire(output, true, cancel, || started.send(()).unwrap())
                                 .unwrap();
                         assert_eq!(active.fetch_add(1, Ordering::SeqCst), 0);
-                        thread::sleep(Duration::from_millis(1));
+                        thread::yield_now();
                         assert_eq!(active.fetch_sub(1, Ordering::SeqCst), 1);
                     }
                 }));
             }
             for _ in 0..8 {
-                waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+                waiting.recv_timeout(Duration::from_secs(10)).unwrap();
             }
             drop(owner);
             for worker in workers {

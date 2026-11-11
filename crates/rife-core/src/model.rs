@@ -248,15 +248,7 @@ mod tests {
     const GRAPH: &str = "7767517\n4 4\nInput a 0 1 in0\nInput b 0 1 in1\nInput c 0 1 in2\nBinaryOp mix 2 1 in0 in1 out0 0=0\n";
     #[test]
     fn dynamic_directory_names_are_preserved_and_paths_rejected() {
-        for name in [
-            "rife-v4.25",
-            "rife-v4.25-lite",
-            "rife-v4.25-heavy",
-            "rife-v4.26",
-            "rife-v4.26-large",
-            "rife-v4.28-large",
-            "CustomModel",
-        ] {
+        for name in ["CustomModel", "rife-v9.99-custom"] {
             let model: Model = name.parse().unwrap();
             assert_eq!(model.to_string(), name);
             assert_eq!(model.directory(), name);

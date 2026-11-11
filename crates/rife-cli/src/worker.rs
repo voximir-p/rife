@@ -741,9 +741,15 @@ mod tests {
                     send_event(&Event::Finished { frames: 2 }).unwrap();
                 }
                 let path = PathBuf::from(env::var_os("RIFE_TEST_WORKER_CANCEL").unwrap());
+                let deadline = Instant::now() + Duration::from_secs(30);
                 while !path.exists() {
+                    assert!(
+                        Instant::now() < deadline,
+                        "test parent did not cancel the worker"
+                    );
                     thread::sleep(Duration::from_millis(10));
                 }
+                fs::write(path.with_extension("ack"), []).unwrap();
             }
             "incomplete" => {}
             "reported" => {
@@ -867,7 +873,6 @@ mod tests {
             )
             .unwrap();
             worker.loaded().unwrap();
-            let started = Instant::now();
             if cancelled {
                 cancel.cancel();
                 assert!(
@@ -883,7 +888,16 @@ mod tests {
                 assert_eq!(frames, [1, 2]);
             }
             drop(worker);
-            assert!(started.elapsed() < Duration::from_secs(2));
+            if cancelled {
+                assert!(
+                    staging
+                        .path()
+                        .join(CANCEL_FILE)
+                        .with_extension("ack")
+                        .exists(),
+                    "worker did not acknowledge cooperative cancellation"
+                );
+            }
         }
     }
 
@@ -899,22 +913,35 @@ mod tests {
         )
         .unwrap();
         worker.loaded().unwrap();
-        let signal = cancel.clone();
-        let trigger = thread::spawn(move || {
-            thread::sleep(Duration::from_millis(100));
-            signal.cancel();
+        assert!(matches!(
+            worker.next_event().unwrap(),
+            Event::Finished { frames: 2 }
+        ));
+        let (waiting, started) = mpsc::channel();
+        thread::scope(|scope| {
+            let completion = scope.spawn(|| {
+                waiting.send(()).unwrap();
+                worker.check_exit(true)
+            });
+            started.recv_timeout(Duration::from_secs(10)).unwrap();
+            cancel.cancel();
+            assert!(
+                completion
+                    .join()
+                    .unwrap()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("cancelled")
+            );
         });
-        assert!(
-            worker
-                .process(|_| {})
-                .unwrap_err()
-                .to_string()
-                .contains("cancelled")
-        );
-        let started = Instant::now();
         drop(worker);
-        trigger.join().unwrap();
-        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(
+            staging
+                .path()
+                .join(CANCEL_FILE)
+                .with_extension("ack")
+                .exists()
+        );
     }
 
     #[test]

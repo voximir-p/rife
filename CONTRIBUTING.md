@@ -55,10 +55,11 @@ chapter, and audio timing with FFmpeg/FFprobe. They do not require models or a G
 cargo test -p rife-cli --release --locked encode_timing_tests -- --ignored
 ```
 
-These tests use `runtime/ffmpeg/ffmpeg` and `runtime/ffmpeg/ffprobe` (`.exe` on
-Windows). Set `RIFE_TEST_FFMPEG` and `RIFE_TEST_FFPROBE` to use other test binaries.
+These tests use `ffmpeg` and `ffprobe` from `PATH`. Set `RIFE_TEST_FFMPEG` and
+`RIFE_TEST_FFPROBE` to select explicit test binaries instead. This discovery is
+test-only; the application still uses its executable-relative runtime tools.
 
-The smoke script exercises the built CLI through the runtime directory layout. Put the executable, FFmpeg/FFprobe, and compatible `rife-v4.26` and `rife-v4.26-large` models under `runtime/` as shown in the README, then run:
+The smoke script exercises the built CLI through the runtime directory layout. Put the executable, FFmpeg/FFprobe, and one compatible model under `runtime/` as shown in the README, then run:
 
 ```sh
 # On Windows, copy target/release/rife.exe to runtime/rife.exe instead.
@@ -66,17 +67,37 @@ cp target/release/rife runtime/rife
 sh scripts/smoke.sh
 ```
 
-Pass a different runtime directory as the first argument to `smoke.sh`. Set
-`RIFE_SMOKE_GPU=-1` to run on CPU; the default is automatic device selection.
+Pass a different runtime directory as the first argument to `smoke.sh`. The
+suite uses the CLI's default model unless `--model DIRECTORY_NAME` selects
+another installed model. It runs on CPU by default; use `--gpu 0` for GPU 0
+(`RIFE_SMOKE_GPU` is also supported). `--timeout SECONDS` changes the per-command
+deadlock guard from 120 seconds. Fixtures and outputs use an isolated OS
+temporary directory, so the suite does not need a writable checkout or a
+particular Cargo target directory. Run it separately for each model/device
+combination being validated.
 
 The regular workspace test command does not run the opt-in native inference test. Point it at an installed compatible model and run it serially:
 
 ```sh
-RIFE_TEST_MODEL_DIR="$PWD/runtime/models/rife-v4.26" \
-  cargo test -p rife-core --release --test native -- --ignored --test-threads=1
+RIFE_TEST_MODEL_DIR="$PWD/runtime/models/<model-directory>" \
+  cargo test -p rife-core --release --lib engine::native_tests -- --ignored --test-threads=1
 ```
 
-Repeat with each model directory being validated. Native inference coverage requires a compatible model; GPU coverage also requires a Vulkan-capable driver.
+Repeat with each model directory being validated. These checks use CPU unless
+`RIFE_TEST_GPU=0` (or another device selection) requests GPU coverage. The weight
+validation and native cancellation checks always use CPU. Padding comes from
+the supplied model's validated graph. Native cancellation is triggered by a
+checkpoint callback, without large frames, sleeps, or CPU-speed deadlines.
+GPU coverage requires a Vulkan-capable driver.
+
+Keep ordinary unit tests independent of installed models, FFmpeg, GPU drivers,
+the current working directory, and a writable checkout. Use owned temporary
+directories and synthetic fixtures; keep external-resource checks explicitly
+opt-in. Synchronize concurrency tests with channels/acknowledgements rather
+than sleeping to assume another task has run. Timeouts should guard deadlocks,
+not assert machine performance. Self-executing child test fixtures are needed
+for process/lock/crash coverage even though they do nothing when discovered
+without their private environment settings.
 
 ## Project structure
 

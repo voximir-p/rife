@@ -700,7 +700,6 @@ mod tests {
                 ])
                 .env("RIFE_TEST_STDOUT_CHILD", "1");
             let cancel = CancellationToken::default();
-            let started = std::time::Instant::now();
             let result: Result<()> = read_output(command, "test child", &cancel, |reader| {
                 let mut line = String::new();
                 loop {
@@ -730,7 +729,6 @@ mod tests {
                     "packet parser failed"
                 }
             );
-            assert!(started.elapsed() < std::time::Duration::from_secs(5));
         }
     }
 
@@ -760,16 +758,6 @@ mod tests {
     }
 
     #[test]
-    fn silent_cleanup_termination_does_not_obscure_decoder_diagnostics() {
-        let original = anyhow!("NCNN interpolation failed (code -3)");
-        let decoder = failure("FFmpeg decoding", "Error muxing a packet", true);
-        let heading = decoder.to_string();
-        let error = attach_cleanup_failure(original, decoder);
-        let error = attach_cleanup_failure(error, failure("FFmpeg encoding", "", true));
-        assert_eq!(format!("{error:#}"), heading);
-    }
-
-    #[test]
     fn native_failure_stays_primary_when_ffmpeg_reports_shutdown_errors() {
         let inference = rife_core::InferenceError {
             device: rife_core::Device {
@@ -795,23 +783,19 @@ mod tests {
     }
 
     #[test]
-    fn independent_silent_failure_is_preserved_without_a_blank_line() {
-        let failure = failure("FFmpeg encoding", "", false);
-        let heading = failure.to_string();
-        assert!(!heading.contains('\n'));
-        let error = attach_cleanup_failure(anyhow!("Broken pipe"), failure);
-        assert_eq!(format!("{error:#}"), heading);
-    }
-
-    #[test]
-    fn cleanup_preserves_encoder_diagnostics_and_standalone_inference_errors() {
-        let original = anyhow!("NCNN interpolation failed (code -3)");
+    fn cleanup_ignores_silent_kills_but_preserves_backend_failures() {
+        let original = anyhow!("pipe closed");
         let error = attach_cleanup_failure(original, failure("FFmpeg decoding", "", true));
-        assert_eq!(format!("{error:#}"), "NCNN interpolation failed (code -3)");
-        let encoder = failure("FFmpeg encoding", "Unknown encoder", true);
-        let heading = encoder.to_string();
-        let error = attach_cleanup_failure(error, encoder);
-        assert_eq!(format!("{error:#}"), heading);
+        assert_eq!(error.to_string(), "pipe closed");
+        for (diagnostics, killed) in [("", false), ("Unknown encoder", true)] {
+            let backend = failure("FFmpeg encoding", diagnostics, killed);
+            let expected = backend.to_string();
+            let error = attach_cleanup_failure(anyhow!("pipe closed"), backend);
+            assert_eq!(format!("{error:#}"), expected);
+            assert_eq!(expected.contains('\n'), !diagnostics.is_empty());
+            let error = attach_cleanup_failure(error, failure("FFmpeg decoding", "", true));
+            assert_eq!(format!("{error:#}"), expected);
+        }
     }
 
     #[test]

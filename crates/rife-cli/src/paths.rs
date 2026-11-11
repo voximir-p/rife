@@ -198,7 +198,7 @@ mod tests {
     use super::*;
     use clap::Parser;
     fn temp() -> TempDir {
-        tempfile::tempdir_in(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target")).unwrap()
+        tempfile::tempdir().unwrap()
     }
 
     fn commit_output(staged: &Path, output: &Path, overwrite: bool) -> Result<()> {
@@ -221,7 +221,7 @@ mod tests {
     }
 
     #[test]
-    fn staging_prefers_system_temp_and_falls_back_when_unavailable() {
+    fn staging_uses_preferred_directory_and_falls_back_when_unavailable() {
         let output_parent = temp();
         let preferred = temp();
         let staging = staging_directory_in(preferred.path(), output_parent.path()).unwrap();
@@ -234,15 +234,10 @@ mod tests {
             let fallback = staging_directory_in(&unavailable, output_parent.path()).unwrap();
             assert_eq!(fallback.path().parent(), Some(output_parent.path()));
         }
-        let system = staging_directory(output_parent.path()).unwrap();
-        assert_eq!(
-            dunce::canonicalize(system.path().parent().unwrap()).unwrap(),
-            dunce::canonicalize(env::temp_dir()).unwrap()
-        );
     }
 
     #[test]
-    fn system_temp_output_commits_for_new_and_existing_files() {
+    fn staged_outputs_commit_and_preserve_existing_files_without_overwrite() {
         let root = temp();
         let output = root.path().join("output.mp4");
         for overwrite in [false, true] {
@@ -251,6 +246,11 @@ mod tests {
             let staged = staging.path().join("encoded.mp4");
             let expected = vec![if overwrite { 42 } else { 21 }; 200_000];
             fs::write(&staged, &expected).unwrap();
+            if overwrite {
+                let previous = fs::read(&output).unwrap();
+                assert!(commit_output(&staged, &output, false).is_err());
+                assert_eq!(fs::read(&output).unwrap(), previous);
+            }
             commit_output(&staged, &output, overwrite).unwrap();
             drop(staging);
             assert!(!staging_path.exists());
@@ -281,14 +281,7 @@ mod tests {
             fs::write(&expected, []).unwrap();
             assert_eq!(tool_path(runtime.path(), tool).unwrap(), expected);
         }
-        for name in [
-            "rife-v4.25",
-            "rife-v4.25-lite",
-            "rife-v4.25-heavy",
-            "rife-v4.26",
-            "rife-v4.26-large",
-            "rife-v4.28-large",
-        ] {
+        for name in ["CustomModel", "rife-v9.99-custom"] {
             let model: Model = name.parse().unwrap();
             let directory = runtime
                 .path()
@@ -325,19 +318,5 @@ mod tests {
         args.overwrite = true;
         assert!(resolve_paths(&args, &CancellationToken::default()).is_ok());
         assert_eq!(fs::read_to_string(input).unwrap(), "original");
-    }
-    #[test]
-    fn staged_output_replaces_existing_output_and_is_cleaned_up() {
-        let root = temp();
-        let output = root.path().join("output.mp4");
-        fs::write(&output, "old").unwrap();
-        let staging = tempfile::tempdir_in(root.path()).unwrap();
-        let staged = staging.path().join("encoded.mp4");
-        fs::write(&staged, "new").unwrap();
-        assert!(commit_output(&staged, &output, false).is_err());
-        commit_output(&staged, &output, true).unwrap();
-        drop(staging);
-        assert_eq!(fs::read_to_string(output).unwrap(), "new");
-        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
     }
 }

@@ -1077,10 +1077,10 @@ mod tests {
     #[test]
     fn backend_errors_show_reason_then_raw_diagnostics_and_final_summary() {
         let details = vec![
-            "[0 NVIDIA GeForce RTX 3050 Ti Laptop GPU] queueC=2[8] queueG=0[16] queueT=1[2]".into(),
-            "[0 NVIDIA GeForce RTX 3050 Ti Laptop GPU] bugsbn1=0 bugbilz=0 bugcopc=0 bugihfa=0".into(),
-            "[0 NVIDIA GeForce RTX 3050 Ti Laptop GPU] fp16-p/s/a=1/1/1 int8-p/s/a=1/1/1".into(),
-            "[0 NVIDIA GeForce RTX 3050 Ti Laptop GPU] subgroup=32 basic=1 vote=1 ballot=1 shuffle=1".into(),
+            "[0 Example Vulkan GPU] queueC=2[8] queueG=0[16] queueT=1[2]".into(),
+            "[0 Example Vulkan GPU] bugsbn1=0 bugbilz=0 bugcopc=0 bugihfa=0".into(),
+            "[0 Example Vulkan GPU] fp16-p/s/a=1/1/1 int8-p/s/a=1/1/1".into(),
+            "[0 Example Vulkan GPU] subgroup=32 basic=1 vote=1 ballot=1 shuffle=1".into(),
             "vkAllocateMemory failed -2".into(),
         ];
         let report = crate::worker::BackendReport {

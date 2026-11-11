@@ -18,15 +18,13 @@ use std::{
 fn tool(name: &str) -> PathBuf {
     std::env::var_os(format!("RIFE_TEST_{}", name.to_ascii_uppercase()))
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../runtime/ffmpeg")
-                .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
-        })
+        .unwrap_or_else(|| PathBuf::from(format!("{name}{}", std::env::consts::EXE_SUFFIX)))
 }
 
 fn run(command: &mut Command) -> Vec<u8> {
-    let output = command.output().expect("could not launch test tool");
+    let output = command
+        .output()
+        .unwrap_or_else(|error| panic!("could not launch {command:?}: {error}"));
     assert!(
         output.status.success(),
         "{command:?}\n{}",
@@ -253,7 +251,7 @@ fn check_chapters(source: &Value, output: &Value, offset: f64, speed: f64) {
 }
 
 #[test]
-#[ignore = "requires FFmpeg and FFprobe in runtime/ffmpeg or RIFE_TEST_FFMPEG/RIFE_TEST_FFPROBE"]
+#[ignore = "requires FFmpeg and FFprobe on PATH or RIFE_TEST_FFMPEG/RIFE_TEST_FFPROBE"]
 fn subtitle_cues_and_chapters_follow_audio_timing() {
     let directory = tempfile::tempdir().unwrap();
     let input = fixture(directory.path(), 0);
@@ -339,7 +337,7 @@ fn subtitle_cues_and_chapters_follow_audio_timing() {
 }
 
 #[test]
-#[ignore = "requires FFmpeg and FFprobe in runtime/ffmpeg or RIFE_TEST_FFMPEG/RIFE_TEST_FFPROBE"]
+#[ignore = "requires FFmpeg and FFprobe on PATH or RIFE_TEST_FFMPEG/RIFE_TEST_FFPROBE"]
 fn chapter_retiming_normalizes_source_start_and_supports_mp4() {
     let directory = tempfile::tempdir().unwrap();
     let input = fixture(directory.path(), 10);
@@ -365,7 +363,7 @@ fn chapter_retiming_normalizes_source_start_and_supports_mp4() {
 }
 
 #[test]
-#[ignore = "requires FFmpeg and FFprobe in runtime/ffmpeg or RIFE_TEST_FFMPEG/RIFE_TEST_FFPROBE"]
+#[ignore = "requires FFmpeg and FFprobe on PATH or RIFE_TEST_FFMPEG/RIFE_TEST_FFPROBE"]
 fn retiming_accepts_inputs_without_subtitles_or_chapters() {
     let directory = tempfile::tempdir().unwrap();
     let source = fixture(directory.path(), 0);

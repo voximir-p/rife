@@ -653,6 +653,8 @@ mod tests {
 
     #[test]
     fn explicit_gif_encoder_keeps_palette_quality_without_bitrate_queries() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing_ffmpeg = directory.path().join("missing-ffmpeg");
         for codec in [None, Some("-c:v gif")] {
             let mut arguments = vec!["rife", "-i", "input.mp4"];
             if let Some(codec) = codec {
@@ -663,7 +665,7 @@ mod tests {
             // GIF quality must not depend on source bitrate or launching an
             // encoder query, even when its encoder is selected explicitly.
             let quality = prepare_video_quality(
-                Path::new("missing-ffmpeg"),
+                &missing_ffmpeg,
                 "gif",
                 &args,
                 VideoQualityInput {
@@ -797,6 +799,8 @@ mod tests {
 
     #[test]
     fn explicit_rate_control_does_not_require_automatic_bitrate_queries() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing_ffmpeg = directory.path().join("missing-ffmpeg");
         for (extra, expected) in [
             ("-crf=23", VideoQuality::Crf("23".into())),
             ("-b:v 125k", VideoQuality::FormatDefault),
@@ -806,7 +810,7 @@ mod tests {
             let args =
                 Args::try_parse_from(["rife", "-i", "in.mp4", "-e", extra, "out.mp4"]).unwrap();
             let quality = prepare_video_quality(
-                Path::new("missing-ffmpeg"),
+                &missing_ffmpeg,
                 "mp4",
                 &args,
                 VideoQualityInput {

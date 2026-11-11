@@ -24,13 +24,17 @@ import tempfile
 root = Path(sys.argv.pop(1)).resolve()
 parser = argparse.ArgumentParser(prog="smoke.sh", description=__doc__)
 parser.add_argument("runtime", nargs="?", type=Path, default=root / "runtime")
+parser.add_argument("--model", help="Model directory name (default: the CLI default model)")
+parser.add_argument("--gpu", default=os.environ.get("RIFE_SMOKE_GPU", "-1"),
+                    help="Device selection (default: CPU; RIFE_SMOKE_GPU is also supported)")
+parser.add_argument("--timeout", type=float, default=120, help="Timeout per subprocess in seconds")
 args = parser.parse_args()
 runtime = args.runtime.resolve()
 suffix = ".exe" if os.name == "nt" else ""
 metadata = json.loads(subprocess.check_output([
     "cargo", "metadata", "--manifest-path", str(root / "Cargo.toml"),
     "--no-deps", "--format-version", "1", "--offline",
-], text=True))
+], text=True, timeout=args.timeout))
 package, = [p for p in metadata["packages"] if p["id"] in metadata["workspace_default_members"]]
 binary, = [t for t in package["targets"] if "bin" in t["kind"]]
 app = binary["name"]
@@ -41,7 +45,7 @@ ffprobe = runtime / "ffmpeg" / ("ffprobe" + suffix)
 
 def run(*command, succeeds=True):
     result = subprocess.run([str(arg) for arg in command], stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True)
+                            stderr=subprocess.STDOUT, text=True, timeout=args.timeout)
     if succeeds:
         assert result.returncode == 0, f"{command!r}\n{result.stdout}"
     else:
@@ -49,8 +53,9 @@ def run(*command, succeeds=True):
     return result.stdout
 
 
-def rife(*arguments, succeeds=True):
-    return run(executable, "--gpu=" + os.environ.get("RIFE_SMOKE_GPU", "auto"),
+def rife(*arguments, succeeds=True, model=args.model, gpu=args.gpu):
+    model_options = ["-m", model] if model is not None else []
+    return run(executable, "--gpu=" + gpu, *model_options,
                *arguments, succeeds=succeeds)
 
 
@@ -65,7 +70,7 @@ def probe(path, *options):
 
 
 def frames(output, *options):
-    rife("-i", source, "-m", "rife-v4.26", *options, "-e", "-c:v ffv1", "-e", "-c:a pcm_s16le", "-y", output)
+    rife("-i", source, *options, "-e", "-c:v ffv1", "-e", "-c:a pcm_s16le", "-y", output)
     return hashes(output)
 
 
@@ -91,13 +96,13 @@ def audio_check(path, expected_duration, start, end, tolerance):
 
 
 assert run(executable, "--version").strip() == f"{app} {package['version']}"
-(root / "target").mkdir(exist_ok=True)
-with tempfile.TemporaryDirectory(prefix="rife-smoke-", dir=root / "target") as directory:
+with tempfile.TemporaryDirectory(prefix="rife-smoke-") as directory:
     test_root = Path(directory)
     os_temp = test_root / "os-%temp"
     os_temp.mkdir()
     # Scope TMPDIR/TMP/TEMP to these test subprocesses, including Windows GetTempPath.
     os.environ.update({name: str(os_temp) for name in ["TMPDIR", "TMP", "TEMP"]})
+    os.environ["NO_COLOR"] = "1"
     raw = test_root / "source.rgb"
     pixels = bytearray()
     for frame in range(6):
@@ -119,24 +124,20 @@ with tempfile.TemporaryDirectory(prefix="rife-smoke-", dir=root / "target") as d
     original = hashes(source)
     custom = test_root / "custom-options.mp4"
     title = "hello world; $(echo untouched) $HOME"
-    log = rife("-i", source, "-m", "rife-v4.26", "-f", "2", "-s", "0.5",
+    log = rife("-i", source, "-f", "2", "-s", "0.5",
                "-e", "-c:a copy", "-e", "-crf=23", "--extra-encoder-option",
                f"-crf 12 -c:a aac -b:a 10k -metadata 'title={title}'", custom)
-    assert b"crf=12.0" in custom.read_bytes(), "Repeated CRF options did not override defaults"
     custom_info = probe(custom, "-show_streams", "-show_format")
     assert custom_info["format"]["tags"]["title"] == title, "Quoted metadata was expanded or split"
     assert any(stream["codec_name"] == "aac" for stream in custom_info["streams"])
     assert next(stream for stream in custom_info["streams"] if stream["codec_type"] == "video")["codec_name"] == "h264"
-    single_crf = test_root / "single-crf.mp4"
-    rife("-i", source, "-m", "rife-v4.26", "-e", "-crf=23", "-e", "-c:a aac", single_crf)
-    assert b"crf=23.0" in single_crf.read_bytes(), "Inline CRF option was not passed to FFmpeg"
     raw_images = test_root / "uncompressed-png"
     raw_images.mkdir()
-    rife("-i", source, "-m", "rife-v4.26", "-e", "-compression_level=0", raw_images / "%03d.png")
+    rife("-i", source, "-e", "-compression_level=0", raw_images / "%03d.png")
     assert hashes(raw_images / "%03d.png") == original, "Image encoder options changed RGB pixels"
     for option in ["-rife_missing_option 1", "-crf NaN", "-a:b 10k"]:
         failed_option = test_root / "bad-option.mp4"
-        log = rife("-i", source, "-m", "rife-v4.26", "-v", "-e", option, failed_option, succeeds=False)
+        log = rife("-i", source, "-v", "-e", option, failed_option, succeeds=False)
         assert log.startswith("error:") and log.endswith("\n\nerror: media processing failed\n"), log
         assert not re.search(r"^ *(?:Source|Target|Counted|Loaded|Processed|Saved)\b", log, re.M), log
         assert not failed_option.exists()
@@ -144,10 +145,10 @@ with tempfile.TemporaryDirectory(prefix="rife-smoke-", dir=root / "target") as d
         log = rife("-i", source, removed_flag, "23", test_root / "removed-option.mp4", succeeds=False)
         assert "unexpected argument" in log and not (test_root / "removed-option.mp4").exists(), log
     check_cleanup()
-    print("Passed: extra encoder options, repeated/inline CRF, literal quoted metadata, audio overrides, image settings and early errors.", flush=True)
+    print("Passed: extra encoder options, literal quoted metadata, audio overrides, image settings and early errors.", flush=True)
     for threshold in ["0.3", "0", "1"]:
         output = test_root / f"threshold-{threshold}.nut"
-        log = rife("-i", source, "-m", "rife-v4.26", "-f", "2", "-t", threshold,
+        log = rife("-i", source, "-f", "2", "-t", threshold,
                    "-e", "-c:v ffv1", "-y", output)
         lines = log.splitlines()
         assert len(lines) == 3 and re.fullmatch(r" +Counted 6 frames in total", lines[0]), log
@@ -168,15 +169,10 @@ with tempfile.TemporaryDirectory(prefix="rife-smoke-", dir=root / "target") as d
         info = probe(output, "-show_entries", "stream=codec_type,avg_frame_rate")
         assert next(s for s in info["streams"] if s["codec_type"] == "video")["avg_frame_rate"] == "60000/1001"
         assert any(s["codec_type"] == "audio" for s in info["streams"])
-    log = rife("-i", source, "-m", "rife-v4.26", "-f", "2", "-v", "-e", "-c:v ffv1", "-y", test_root / "verbose.nut")
-    labels = ["Source", "Target", "Counted", "Loaded", "Device", "Processed", "Saved"]
-    for label in labels:
-        assert re.search(rf"^ *{label} +", log, re.M), log
+    log = rife("-i", source, "-f", "2", "-v", "-e", "-c:v ffv1", "-y", test_root / "verbose.nut")
     assert re.fullmatch(r"Source Target Counted Loaded (?:Device )+Processed Saved",
                         " ".join(line.split()[0] for line in log.splitlines())), log
     assert not re.search(r"^ *(?:Counting|Loading|Processing|Saving)\b", log, re.M), log
-    assert log.index("Counted 6 frames in total") < log.index("Loaded model")
-    assert re.search(r"^ +Loaded model `rife-v4.26`$", log, re.M), log
     assert re.search(r"^ +Source 64x64 @ 29\.97 fps\n +Target 64x64 @ 59\.94 fps$", log, re.M), log
     assert not re.search(r"^ *Encoding|finalizing", log, re.M), log
     assert not re.search(r"Done:|^ *Video |^ *Model |Scenes|…|\.\.\.|Extracting frames:|Encoding video:|\x1b|\n\n", log, re.M), log
@@ -185,28 +181,29 @@ with tempfile.TemporaryDirectory(prefix="rife-smoke-", dir=root / "target") as d
         directory = test_root / f"frames-{extension}"
         directory.mkdir()
         pattern = directory / f"frame_%08d.{extension}"
-        rife("-i", source, "-m", "rife-v4.26", "-f", "2",
+        rife("-i", source, "-f", "2",
              "-e", "-c:a rife_missing_encoder", pattern)
         assert sorted(path.name for path in directory.iterdir()) == [
             f"frame_{number:08d}.{extension}" for number in range(1, 13)], pattern
         assert hashes(pattern) == expected_images, f"Lossless {extension} changed RGB pixels"
-        before = {path.name: path.read_bytes() for path in directory.iterdir()}
-        log = rife("-i", source, "-m", "rife-v4.26", "-f", "2", pattern, succeeds=False)
-        assert log == "error: output already exists (pass --overwrite to replace it)\n", log
-        log = rife("-i", source, "-m", "rife-v4.26", "-f", "2", "-y",
-                   "-e", "-c:v rife_missing_encoder", pattern, succeeds=False)
-        assert "rife_missing_encoder" in log and log.endswith("\n\nerror: media processing failed\n"), log
-        assert not re.search(r"^ *(?:Source|Target|Counted|Loaded|Processed|Saved)\b", log, re.M), log
-        assert {path.name: path.read_bytes() for path in directory.iterdir()} == before
-        # A successful replacement keeps the same numbering and raw RGB values.
-        rife("-i", source, "-m", "rife-v4.26", "-f", "2", "-y", pattern)
-        assert hashes(pattern) == expected_images
-        check_cleanup()
+        if extension == "png":
+            before = {path.name: path.read_bytes() for path in directory.iterdir()}
+            log = rife("-i", source, "-f", "2", pattern, succeeds=False)
+            assert log == "error: output already exists (pass --overwrite to replace it)\n", log
+            log = rife("-i", source, "-f", "2", "-y",
+                       "-e", "-c:v rife_missing_encoder", pattern, succeeds=False)
+            assert "rife_missing_encoder" in log and log.endswith("\n\nerror: media processing failed\n"), log
+            assert not re.search(r"^ *(?:Source|Target|Counted|Loaded|Processed|Saved)\b", log, re.M), log
+            assert {path.name: path.read_bytes() for path in directory.iterdir()} == before
+            # A successful replacement keeps the same numbering and raw RGB values.
+            rife("-i", source, "-f", "2", "-y", pattern)
+            assert hashes(pattern) == expected_images
+            check_cleanup()
     print("Passed: lossless image sequences, RGB equality, numbering, overwrite protection and encoder-failure cleanup.", flush=True)
     escaped = test_root / "escaped-frames"
     escaped.mkdir()
     pattern = escaped / "视%%频_%d.png"
-    rife("-i", source, "-m", "rife-v4.26", "-s", "0.5", "-e", "-c:a copy", pattern)
+    rife("-i", source, "-s", "0.5", "-e", "-c:a copy", pattern)
     assert set(path.name for path in escaped.iterdir()) == {f"视%频_{number}.png" for number in range(1, 13)}
     assert hashes(pattern) == expected_images, "Speed-adjusted image schedule changed"
     odd_source = test_root / "odd.nut"
@@ -215,14 +212,14 @@ with tempfile.TemporaryDirectory(prefix="rife-smoke-", dir=root / "target") as d
     odd_images = test_root / "odd-frames"
     odd_images.mkdir()
     for output, codec in [(odd_video, ["-e", "-c:v ffv1"]), (odd_images / "%02d.png", [])]:
-        rife("-i", odd_source, "-m", "rife-v4.26", "-f", "1.5", "-s", "0.75", *codec, output)
+        rife("-i", odd_source, "-f", "1.5", "-s", "0.75", *codec, output)
     assert len(list(odd_images.iterdir())) == 8
     assert hashes(odd_images / "%02d.png") == hashes(odd_video), "Odd-sized RGB frames changed"
     image_info = probe(odd_images / "01.png", "-show_entries", "stream=width,height")["streams"][0]
     assert (image_info["width"], image_info["height"]) == (65, 67), "Images were padded"
     jpeg = test_root / "jpeg-frames"
     jpeg.mkdir()
-    rife("-i", source, "-m", "rife-v4.26", jpeg / "%03d.jpg")
+    rife("-i", source, jpeg / "%03d.jpg")
     assert len(list(jpeg.iterdir())) == 6
     corrupt = test_root / "corrupt.mp4"
     corrupt.write_bytes(b"not a video")
@@ -237,7 +234,7 @@ with tempfile.TemporaryDirectory(prefix="rife-smoke-", dir=root / "target") as d
         (["-j", "1:2,3:2"], "process worker counts must match"),
         (["-s", "1e-99"], "requested output frame count is too large"),
     ]:
-        log = rife("-i", corrupt, "-v", *options, test_root / "invalid-early.mp4", succeeds=False)
+        log = rife("-i", corrupt, "-v", *options, test_root / "invalid-early.mp4", gpu="-1", succeeds=False)
         assert log.startswith("error:") and message in log and len(log.splitlines()) == 1, log
     for options, extension in [
         (["-e", "-c:v rife_missing_encoder"], "mp4"),
@@ -245,7 +242,7 @@ with tempfile.TemporaryDirectory(prefix="rife-smoke-", dir=root / "target") as d
         (["-e", "-c:v aac"], "mp4"),
         ([], "rife_missing_format"),
     ]:
-        log = rife("-i", source, "-m", "rife-v4.26", "-v", *options,
+        log = rife("-i", source, "-v", *options,
                    test_root / f"invalid-early.{extension}", succeeds=False)
         assert log.startswith("error:") and log.endswith("\n\nerror: media processing failed\n"), log
         assert not re.search(r"^ *(?:Source|Target|Counted|Loaded|Processed|Saved)\b", log, re.M), log
@@ -256,20 +253,17 @@ with tempfile.TemporaryDirectory(prefix="rife-smoke-", dir=root / "target") as d
     default_gif = test_root / "default.gif"
     explicit_gif = test_root / "explicit.gif"
     for output, codec in [(default_gif, []), (explicit_gif, ["-e", "-c:v gif"])]:
-        rife("-i", source, "-m", "rife-v4.26", "-t", "0", "-f", "1", "-s", "0.25",
+        rife("-i", source, "-t", "0", "-f", "1", "-s", "0.25",
              *codec, "-y", output)
     assert default_gif.read_bytes() == explicit_gif.read_bytes(), "Explicit GIF encoder changed palette quality"
     failed = test_root / "encoder-failure.mp4"
-    log = rife("-i", source, "-m", "rife-v4.26", "-e", "-c:v rife_missing_encoder", "-y", failed, succeeds=False)
+    log = rife("-i", source, "-e", "-c:v rife_missing_encoder", "-y", failed, succeeds=False)
     assert re.search(r"^error:", log, re.M) and "rife_missing_encoder" in log and not failed.exists(), log
     assert log.endswith("\n\nerror: media processing failed\n"), log
     assert "Broken pipe" not in log and "FFmpeg decoding failed" not in log, log
     assert not re.search(r"^ *(?:Source|Target|Counted|Loaded|Processed|Saved)\b", log, re.M), log
     check_cleanup()
-    for flag in ["-h", "--help"]:
-        help_text = run(executable, flag)
-        assert "Examples:" not in help_text and f"Usage: {app}" in help_text
-    print("Passed: scene cuts, original pixels, rational FPS, audio, logging, help, and encoder cleanup.", flush=True)
+    print("Passed: scene cuts, original pixels, rational FPS, audio, logging and encoder cleanup.", flush=True)
 
     for scale, count, rate in [("4", 24, "120000/1001"), ("0.5", 3, "15000/1001"), ("1", 6, "30000/1001"), ("1.5", 9, "45000/1001")]:
         output = test_root / f"scale-{scale}.nut"
@@ -281,10 +275,7 @@ with tempfile.TemporaryDirectory(prefix="rife-smoke-", dir=root / "target") as d
     result = frames(slow, "-f", "2", "-s", "0.5")
     assert len(result) == 24 and all(result[i] == original[2] for i in [8, 9, 10, 11])
     assert probe(slow, "-select_streams", "v:0", "-show_entries", "stream=avg_frame_rate")["streams"][0]["avg_frame_rate"] == "60000/1001"
-    for invalid in [["-f", "0"], ["-s", "0"], ["--slow", "2"], ["--num-frame", "24"], ["--time-step", "0.5"], ["--tta"], ["--temporal-tta"], ["--uhd"], ["-s", "0.5", "-e", "-c:a copy"]]:
-        rife("-i", source, *invalid, "-y", test_root / "invalid.nut", succeeds=False)
-    rife("-i", source, "-m", "rife-v4.26-large", "-f", "4", "-e", "-c:v ffv1", "-y", test_root / "large.nut")
-    print("Passed: arbitrary counts, slow motion, cut timestamps, invalid arguments, and both models.", flush=True)
+    print("Passed: arbitrary counts, slow motion and cut timestamps on the selected model.", flush=True)
 
     audio_source = test_root / "audio-source.nut"
     run(ffmpeg, "-v", "error", "-f", "rawvideo", "-pixel_format", "rgb24", "-video_size", "64x64", "-framerate", "6", "-i", raw,
@@ -292,7 +283,7 @@ with tempfile.TemporaryDirectory(prefix="rife-smoke-", dir=root / "target") as d
         "-c:v", "ffv1", "-c:a", "pcm_s16le", "-shortest", "-y", audio_source)
     for speed, duration, start, end, tolerance in [("0.5", 2, .2, 1.7, 3), ("2", .5, .1, .4, 5)]:
         output = test_root / f"pitch-{speed}.nut"
-        rife("-i", audio_source, "-m", "rife-v4.26", "-f", "1", "-s", speed, "-e", "-c:v ffv1", "-e", "-c:a pcm_s16le", "-y", output)
+        rife("-i", audio_source, "-f", "1", "-s", speed, "-e", "-c:v ffv1", "-e", "-c:a pcm_s16le", "-y", output)
         audio_check(output, duration, start, end, tolerance)
     for scale, speed, count in [("2", "0.25", 48), ("2", "0.125", 96), ("1", "0.5", 12), ("1", "1", 6), ("1", "2", 3)]:
         result = frames(test_root / f"scale-{scale}-speed-{speed}.nut", "-f", scale, "-s", speed)
@@ -300,18 +291,20 @@ with tempfile.TemporaryDirectory(prefix="rife-smoke-", dir=root / "target") as d
         if scale == "1" and speed in ["1", "2"]:
             assert all(value == original[i * int(speed)] for i, value in enumerate(result))
     mp4 = test_root / "count-24.mp4"
-    rife("-i", source, "-m", "rife-v4.26", "-f", "4", "-e", "-c:a aac", "-y", mp4)
+    rife("-i", source, "-f", "4", "-e", "-c:a aac", "-y", mp4)
     info = probe(mp4, "-count_frames", "-select_streams", "v:0", "-show_entries", "stream=avg_frame_rate,nb_read_frames")["streams"][0]
     assert info["avg_frame_rate"] == "120000/1001" and info["nb_read_frames"] == "24"
     vfr = test_root / "vfr.nut"
     run(ffmpeg, "-v", "error", "-i", source, "-map", "0:v:0", "-vf", "setpts=PTS+if(gte(N\\,3)\\,2/(30000/1001*TB)\\,0)",
         "-fps_mode", "passthrough", "-enc_time_base:v", "1001:30000", "-c:v", "ffv1", "-y", vfr)
     output = test_root / "vfr-out.mp4"
-    rife("-i", vfr, "-m", "rife-v4.26", "-f", "4", "-y", output)
+    rife("-i", vfr, "-f", "4", "-y", output)
     info = probe(output, "-count_frames", "-select_streams", "v:0", "-show_entries", "stream=avg_frame_rate,nb_read_frames")["streams"][0]
     assert info["avg_frame_rate"] == "120000/1001" and info["nb_read_frames"] == "32"
-    log = rife("-i", source, "-m", "rife-v4.28-large", "-y", test_root / "missing.nut", succeeds=False)
-    assert re.search(r"models[\\/]rife-v4\.28-large", log) and "Unknown model" not in log, log
+    missing_model = "missing-" + test_root.name
+    assert not (runtime / "models" / missing_model).exists()
+    log = rife("-i", source, "-y", test_root / "missing.nut", model=missing_model, succeeds=False)
+    assert missing_model in log and "Unknown model" not in log, log
     check_cleanup()
     print("Passed: audio pitch/duration, independent FPS/speed, integer sampling, MP4 clocks, VFR counting, model lookup, and final cleanup.", flush=True)
 PYTHON

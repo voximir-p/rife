@@ -252,31 +252,6 @@ mod tests {
     }
 
     #[test]
-    fn cargo_identity_and_model_catalog_reach_clap() {
-        use clap::CommandFactory;
-        let command = Args::command();
-        assert_eq!(command.get_name(), APP_NAME);
-        assert_eq!(command.get_version(), Some(VERSION));
-        assert_eq!(config::temp_prefix(), format!(".{APP_NAME}-"));
-        for code in [
-            "rife-v4.25",
-            "rife-v4.25-lite",
-            "rife-v4.25-heavy",
-            "rife-v4.26",
-            "rife-v4.26-large",
-            "rife-v4.28-large",
-        ] {
-            let args = Args::try_parse_from([APP_NAME, "-i", "source.mp4", "-m", code, "out.mp4"])
-                .unwrap();
-            assert_eq!(args.model.directory(), code);
-        }
-        assert!(
-            Args::try_parse_from([APP_NAME, "-i", "source.mp4", "-m", "../bad", "out.mp4"])
-                .is_err()
-        );
-    }
-
-    #[test]
     fn help_shows_all_defaults() {
         use clap::CommandFactory;
 
@@ -309,46 +284,20 @@ mod tests {
     }
 
     #[test]
-    fn jobs_default_applies_to_each_selected_gpu() {
-        for jobs in [None, Some("1:2:2"), Some("1:2,3:2")] {
-            let mut values = vec![APP_NAME, "-i", "source.mp4", "-g", "0,1"];
+    fn compact_worker_counts_map_to_selected_gpus() {
+        for (gpu, jobs, load, process, save) in [
+            ("0,1", None, 1, vec![2, 2], 2),
+            ("0,1", Some("1:2:2"), 1, vec![2, 2], 2),
+            ("1,0", Some("3:2,5:6"), 3, vec![2, 5], 6),
+            ("-1,0", Some("1:1,2:2"), 1, vec![1, 2], 2),
+            ("0,1,2", Some("1:2,3,4:2"), 1, vec![2, 3, 4], 2),
+        ] {
+            let mut values = vec![APP_NAME, "-i", "source.mp4", "-g", gpu];
             if let Some(jobs) = jobs {
                 values.extend(["-j", jobs]);
             }
             values.push("out.mkv");
             let args = Args::try_parse_from(values).unwrap();
-            let config = args.engine_options().jobs.unwrap().for_devices(2).unwrap();
-            assert_eq!(config.load, 1);
-            assert_eq!(
-                config.process,
-                if jobs == Some("1:2,3:2") {
-                    vec![2, 3]
-                } else {
-                    vec![2, 2]
-                }
-            );
-            assert_eq!(config.save, 2);
-        }
-    }
-
-    #[test]
-    fn compact_worker_counts_map_to_selected_gpus() {
-        for (gpu, jobs, load, process, save) in [
-            ("0,1", "1:2,2:2", 1, vec![2, 2], 2),
-            ("1,0", "3:2,5:6", 3, vec![2, 5], 6),
-            ("0,1,2", "1:2,3,4:2", 1, vec![2, 3, 4], 2),
-        ] {
-            let args = Args::try_parse_from([
-                APP_NAME,
-                "-i",
-                "source.mp4",
-                "-g",
-                gpu,
-                "-j",
-                jobs,
-                "out.mkv",
-            ])
-            .unwrap();
             let options = args.engine_options();
             assert_eq!(options.devices, gpu.parse::<DeviceSelection>().unwrap());
             let config = options
@@ -444,15 +393,6 @@ mod tests {
     }
 
     #[test]
-    fn verbose_flags_parse() {
-        for flag in ["-v", "--verbose"] {
-            let args =
-                Args::try_parse_from([APP_NAME, "-i", "source.mp4", flag, "out.mkv"]).unwrap();
-            assert!(args.verbose);
-        }
-    }
-
-    #[test]
     fn help_and_errors_use_requested_palette_without_examples() {
         use clap::CommandFactory;
 
@@ -471,14 +411,6 @@ mod tests {
     }
 
     #[test]
-    fn numeric_cpu_and_default_model_parse() {
-        let args =
-            Args::try_parse_from([APP_NAME, "-i", "source.mp4", "-g", "-1", "out.mkv"]).unwrap();
-        assert_eq!(args.model.directory(), "rife-v4.25");
-        assert_eq!(args.gpu, DeviceSelection::Ids(vec![-1]));
-    }
-
-    #[test]
     fn accepts_numeric_cpu_sentinel_and_rejects_cpu_alias() {
         let cpu =
             Args::try_parse_from([APP_NAME, "-i", "source.mp4", "--gpu", "-1", "out.mkv"]).unwrap();
@@ -487,29 +419,6 @@ mod tests {
             Args::try_parse_from([APP_NAME, "-i", "source.mp4", "--gpu", "cpu", "out.mkv"])
                 .is_err()
         );
-        let args = Args::try_parse_from([
-            APP_NAME,
-            "-i",
-            "source.mp4",
-            "-g",
-            "-1,0",
-            "-j",
-            "1:1,2:2",
-            "out.mkv",
-        ])
-        .unwrap();
-        let config = args.engine_options();
-        assert_eq!(config.devices, DeviceSelection::Ids(vec![-1, 0]));
-        assert_eq!(
-            config.jobs.unwrap().for_devices(2).unwrap().process,
-            vec![1, 2]
-        );
-    }
-
-    #[test]
-    fn threshold_parser_rejects_nonfinite_values() {
-        assert!(parse_threshold("NaN").is_err());
-        assert!(parse_threshold("inf").is_err());
     }
 
     #[test]

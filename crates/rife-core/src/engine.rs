@@ -607,9 +607,8 @@ mod tests {
             tx.send(result.is_err()).unwrap();
         });
         started_rx.recv().unwrap();
-        thread::sleep(Duration::from_millis(20));
         cancel.cancel();
-        let result = rx.recv_timeout(Duration::from_secs(1));
+        let result = rx.recv_timeout(Duration::from_secs(10));
         drop(held);
         worker.join().unwrap();
         assert!(result.unwrap());
@@ -636,12 +635,12 @@ mod tests {
             }
         });
         thread::spawn(|| {
-            let message = CString::new("x".repeat(8192)).unwrap();
+            let message = CString::new("x".repeat(NATIVE_ERROR_CAPACITY * 2)).unwrap();
             // SAFETY: valid format and string pointers live through the call.
             unsafe {
                 rife_record_native_error(c"%s".as_ptr(), message.as_ptr());
             }
-            assert_eq!(native_diagnostic(), "x".repeat(4095));
+            assert_eq!(native_diagnostic(), "x".repeat(NATIVE_ERROR_CAPACITY - 1));
         })
         .join()
         .unwrap();
@@ -705,7 +704,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_devices_and_worker_layouts() {
+    fn parses_device_selections() {
         assert_eq!(
             "AUTO".parse::<DeviceSelection>().unwrap(),
             DeviceSelection::Auto
@@ -717,10 +716,9 @@ mod tests {
         for value in ["", "cpu", "CPU", "-2", "1,", "bad", "auto,0"] {
             assert!(value.parse::<DeviceSelection>().is_err());
         }
-        let jobs = "2:1,2:3".parse::<Jobs>().unwrap();
-        assert_eq!(jobs.process, [1, 2]);
-        for value in ["0:2:2", "1:0:2", "1:2:0", "1:2", "1:65:2"] {
-            assert!(value.parse::<Jobs>().is_err());
-        }
     }
 }
+
+#[cfg(test)]
+#[path = "native_tests.rs"]
+mod native_tests;

@@ -399,12 +399,16 @@ mod tests {
             .map(frame);
         let mut output = Vec::new();
         let mut progress = Vec::new();
+        let later_finished = (Mutex::new(false), std::sync::Condvar::new());
         let stats = run_stream(
             2,
             2,
             input,
             StreamOptions {
                 schedule: Some(double_rate_schedule(4)),
+                // Both inference tasks must fit even while the first waits
+                // for the later task to finish out of order.
+                buffer_capacity: Some(8),
                 ..StreamOptions::default()
             },
             &CancellationToken::default(),
@@ -415,7 +419,15 @@ mod tests {
             |count| progress.push(count),
             |_, a, b, out, _| {
                 if a.pixels()[0] != 0 {
-                    thread::sleep(Duration::from_millis(10));
+                    let (finished, _) = later_finished
+                        .1
+                        .wait_timeout_while(
+                            later_finished.0.lock().unwrap(),
+                            Duration::from_secs(10),
+                            |done| !*done,
+                        )
+                        .unwrap();
+                    assert!(*finished, "later inference task did not run");
                 }
                 for (out, (&a, &b)) in out
                     .pixels_mut()
@@ -423,6 +435,10 @@ mod tests {
                     .zip(a.pixels().iter().zip(b.pixels()))
                 {
                     *out = ((a as u16 + b as u16) / 2) as u8;
+                }
+                if a.pixels()[0] == 0 {
+                    *later_finished.0.lock().unwrap() = true;
+                    later_finished.1.notify_one();
                 }
                 Ok(())
             },
