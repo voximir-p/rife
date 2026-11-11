@@ -70,6 +70,9 @@ rife -i input.mp4 -e -crf=23 output.mp4
 
 # Pass several output options together
 rife -i input.mp4 --extra-encoder-option "-crf 12 -c:a aac -b:a 10k" output.mp4
+
+# Select video and audio encoders through FFmpeg options
+rife -i input.mp4 -e "-c:v ffv1 -c:a pcm_s16le" output.mkv
 ```
 
 `--fps-scale` and `--speed` are independent:
@@ -93,25 +96,23 @@ rife -i input.mp4 --extra-encoder-option "-crf 12 -c:a aac -b:a 10k" output.mp4
 | `-j, --jobs LOAD:PROCESS[,PROCESS...]:SAVE` | Shared input/output buffering budgets and per-device worker counts. Default: `1:2:2`.                              |
 | `-t, --threshold THRESHOLD`                 | Scene-cut threshold from `0` to `1`. Default: `0.3`; `1` disables scene detection.                                 |
 | `-y, --overwrite`                           | Replace an existing output. Waits if another rife process holds its output lock.                                   |
-| `--video-codec ENCODER`                     | Override the FFmpeg video or image encoder. Video encoders without CRF use a bitrate fallback.                    |
-| `--audio-codec ENCODER`                     | Override the audio encoder. At normal speed, audio is copied by default.                                           |
 | `-v, --verbose`                             | Show model, dimensions, frame rates, and device details.                                                            |
 
-FPS scale and playback speed must be finite, positive numbers. When speed changes, audio is re-encoded to match the final video duration while preserving pitch. At normal speed, audio is copied unless `--audio-codec` is supplied. The output container must support a copied audio codec; otherwise, choose a compatible encoder.
+FPS scale and playback speed must be finite, positive numbers. When speed changes, audio is re-encoded to match the final video duration while preserving pitch. At normal speed, audio is copied unless an encoder is selected with `-e "-c:a ENCODER"`. The output container must support a copied audio codec; otherwise, choose a compatible encoder.
 
 Extra encoder options apply to both videos and image sequences. Each value uses POSIX-style quoting and escapes to split flags and values; no shell, variable expansion, or command substitution is used. Options are appended after FFmpeg's input declarations and rife's defaults, before the output filename. Repeat `-e` to append more options in order; later settings take precedence. For example, use `-e "-metadata title='Hello world'"` to keep a value containing spaces together. Input paths and progress options remain managed by rife.
 
-Without a rate-control override, video encoding still reuses source CRF metadata when available, otherwise `20`, or uses a frame-scaled bitrate for encoders without CRF. Explicit CRF, bitrate, or quantizer options override that automatic quality selection. Use `--audio-codec aac` or `-e "-c:a aac"` when overriding audio encoding at normal speed; a bitrate option alone does not change copied audio. FFmpeg's audio bitrate flag is `-b:a`.
+Select video or image encoders with `-e "-c:v ENCODER"` and audio encoders with `-e "-c:a ENCODER"`. Without a rate-control override, video encoding still reuses source CRF metadata when available, otherwise `20`, or uses a frame-scaled bitrate for encoders without CRF. Explicit CRF, bitrate, or quantizer options override that automatic quality selection. A bitrate option alone does not change copied audio. FFmpeg's audio bitrate flag is `-b:a`.
 
 Chapter boundaries and MKV subtitle cue timestamps and durations follow the same timing adjustment as audio. Chapter titles, subtitle styles, and MKV attachments are preserved. Changing only FPS leaves source subtitle and chapter timing unchanged. Subtitle streams are currently preserved only in MKV outputs.
 
-GIF output uses a palette generated from the video for better colors, including with `--video-codec gif`. Palette generation can add saving time and affects file size.
+GIF output uses a palette generated from the video for better colors, including with `-e "-c:v gif"`. Palette generation can add saving time and affects file size.
 
 ### Image sequences
 
 Use exactly one `%d` or `%0Nd` placeholder in the output filename, following [FFmpeg's image-sequence syntax](https://ffmpeg.org/ffmpeg-formats.html#image2-2). For example, `frame_%08d.png` produces `frame_00000001.png`, `frame_00000002.png`, and so on. Numbering starts at 1; `%%` represents a literal percent sign. The output directory must already exist. `--fps-scale` and `--speed` determine which frames are generated as they do for video output; individual images do not store the playback frame rate.
 
-FFmpeg selects the image encoder, pixel format, and quality defaults from the extension, unless `--video-codec` or extra encoder options override them. For example, `-e -compression_level=0` changes PNG compression. No video CRF, bitrate, chroma-subsampling, or padding presets are applied automatically. Lossless RGB formats such as PNG, BMP, TIFF, and PPM preserve the interpolated RGB8 pixels with their default settings; lossy formats such as JPEG use FFmpeg's defaults. Images contain no audio, subtitles, chapters, or attachments, so `--audio-codec` does not apply to image sequences. The existing RGB8/HDR limitation still applies.
+FFmpeg selects the image encoder, pixel format, and quality defaults from the extension, unless extra encoder options override them. For example, `-e -compression_level=0` changes PNG compression. No video CRF, bitrate, chroma-subsampling, or padding presets are applied automatically. Lossless RGB formats such as PNG, BMP, TIFF, and PPM preserve the interpolated RGB8 pixels with their default settings; lossy formats such as JPEG use FFmpeg's defaults. Images contain no audio, subtitles, chapters, or attachments. The existing RGB8/HDR limitation still applies.
 
 Frames are saved to their final names only after encoding succeeds. Any existing numbered file matching the pattern requires `--overwrite`, even if earlier frame numbers are missing. With `--overwrite`, unrelated files and frames beyond the new sequence's range are left untouched. Failed or cancelled saves roll back frames already moved into place. Image-sequence jobs writing to the same directory share an output lock.
 

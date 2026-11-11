@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Remove `--video-codec` and `--audio-codec`; select encoders with `-e "-c:v ENCODER"` and `-e "-c:a ENCODER"` instead.
 - Replace `-c`/`--crf` with repeatable `-e`/`--extra-encoder-option` for FFmpeg output settings. Migrate CRF overrides to `-e -crf=23`.
 - Show Source and Target before counting frames, followed by model loading, Device, and processing in verbose output.
 - End FFmpeg and FFprobe errors with `error: media processing failed` and keep cleanup errors from obscuring the original diagnostics.

@@ -95,14 +95,6 @@ struct Args {
     #[arg(short = 'y', long = "overwrite", help = format!("Allow replacing an output, waiting if another {APP_NAME} instance is writing it"))]
     overwrite: bool,
 
-    /// Override FFmpeg encoder; video encoders without CRF use a frame-scaled bitrate
-    #[arg(long, value_name = "ENCODER")]
-    video_codec: Option<String>,
-
-    /// Override audio handling (default: copy at speed 1; retiming targets source bitrate)
-    #[arg(long, value_name = "ENCODER")]
-    audio_codec: Option<String>,
-
     /// Show model, dimensions, frame rates, and device details
     #[arg(short, long)]
     verbose: bool,
@@ -140,12 +132,10 @@ impl Args {
             "-c:0",
             "-codec:0",
         ])
-        .or(self.video_codec.as_deref())
     }
 
     fn audio_codec(&self) -> Option<&str> {
         self.encoder_option(&["-c", "-codec", "-acodec", "-c:a", "-codec:a"])
-            .or(self.audio_codec.as_deref())
     }
 
     fn extra_video_crf(&self) -> Option<&str> {
@@ -312,6 +302,8 @@ mod tests {
             assert!(text.contains("--speed <FACTOR>"), "{text}");
             assert!(text.contains("--extra-encoder-option <OPTIONS>"), "{text}");
             assert!(!text.contains("--crf"), "{text}");
+            assert!(!text.contains("--video-codec"), "{text}");
+            assert!(!text.contains("--audio-codec"), "{text}");
             assert!(!text.contains("--time-step"), "{text}");
         }
     }
@@ -549,7 +541,7 @@ mod tests {
             ]
         );
         assert_eq!(args.extra_video_crf(), Some("12"));
-        for flag in ["-c", "--crf"] {
+        for flag in ["-c", "--crf", "--video-codec", "--audio-codec"] {
             assert!(
                 Args::try_parse_from([APP_NAME, "-i", "source.mp4", flag, "23", "out.mp4"])
                     .is_err()

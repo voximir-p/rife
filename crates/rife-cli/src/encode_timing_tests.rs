@@ -162,25 +162,13 @@ fn encode_fixture(
         path
     });
     let extension = output.extension().unwrap().to_str().unwrap();
-    let args = Args::try_parse_from([
-        "rife",
-        "-i",
-        "source.mkv",
-        "--video-codec",
-        if extension == "mkv" {
-            "ffv1"
-        } else {
-            "libx264"
-        },
-        "--audio-codec",
-        if extension == "mkv" {
-            "pcm_s16le"
-        } else {
-            "aac"
-        },
-        "output.mkv",
-    ])
-    .unwrap();
+    let codecs = if extension == "mkv" {
+        "-c:v ffv1 -c:a pcm_s16le"
+    } else {
+        "-c:v libx264 -c:a aac"
+    };
+    let args =
+        Args::try_parse_from(["rife", "-i", "source.mkv", "-e", codecs, "output.mkv"]).unwrap();
     let mut command = encode::command(
         &ffmpeg,
         (16, 16),

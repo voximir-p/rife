@@ -610,8 +610,8 @@ mod tests {
             "rife",
             "-i",
             "input.mp4",
-            "--video-codec",
-            "libvpx-vp9",
+            "-e",
+            "-c:v libvpx-vp9",
             "out.webm",
         ])
         .unwrap();
@@ -653,10 +653,10 @@ mod tests {
 
     #[test]
     fn explicit_gif_encoder_keeps_palette_quality_without_bitrate_queries() {
-        for codec in [None, Some("gif")] {
+        for codec in [None, Some("-c:v gif")] {
             let mut arguments = vec!["rife", "-i", "input.mp4"];
             if let Some(codec) = codec {
-                arguments.extend(["--video-codec", codec]);
+                arguments.extend(["-e", codec]);
             }
             arguments.push("out.gif");
             let args = Args::try_parse_from(arguments).unwrap();
@@ -726,8 +726,8 @@ mod tests {
             "rife",
             "-i",
             "input.mp4",
-            "--audio-codec",
-            "copy",
+            "-e",
+            "-c:a copy",
             "-e",
             "-crf=23",
             "-e",
