@@ -5,6 +5,7 @@
 mod audio;
 mod format;
 mod quality;
+mod streaming;
 
 use crate::{cli::Args, config, media::Rate};
 use audio::append_audio_options;
@@ -21,6 +22,11 @@ use {
     rife_core::CancellationToken,
 };
 
+pub(crate) struct Output<'a> {
+    pub format: &'a str,
+    pub stdout: bool,
+}
+
 pub(crate) struct Timing<'a> {
     pub rate: Rate,
     pub video_quality: &'a VideoQuality,
@@ -32,8 +38,24 @@ pub(crate) struct Timing<'a> {
     pub chapter_metadata: Option<&'a Path>,
 }
 
-fn raw_video_command(ffmpeg: &Path, dimensions: (u32, u32), output_rate: Rate) -> Command {
+fn raw_video_command(
+    ffmpeg: &Path,
+    dimensions: (u32, u32),
+    output_rate: Rate,
+    streaming: bool,
+) -> Command {
     let mut cmd = Command::new(ffmpeg);
+    if streaming {
+        // Dimensions, format and rate are explicit: no frame probing is needed.
+        cmd.args([
+            "-probesize",
+            "32",
+            "-analyzeduration",
+            "0",
+            "-fpsprobesize",
+            "0",
+        ]);
+    }
     cmd.args([
         "-hide_banner",
         "-loglevel",
@@ -42,7 +64,7 @@ fn raw_video_command(ffmpeg: &Path, dimensions: (u32, u32), output_rate: Rate) -
         "-y",
         "-nostats",
         "-progress",
-        "pipe:1",
+        "pipe:2",
         "-stats_period",
         &config::PROGRESS_INTERVAL.as_secs_f64().to_string(),
         "-f",
@@ -65,7 +87,7 @@ pub(crate) fn image_command(
     rate: Rate,
     args: &Args,
 ) -> Command {
-    let mut cmd = raw_video_command(ffmpeg, dimensions, rate);
+    let mut cmd = raw_video_command(ffmpeg, dimensions, rate, false);
     cmd.args([
         "-map",
         "0:v:0",
@@ -90,12 +112,12 @@ pub(crate) fn command(
     dimensions: (u32, u32),
     input: &Path,
     timing: Timing<'_>,
-    ext: &str,
+    output: Output<'_>,
     args: &Args,
 ) -> Command {
     let output_rate = timing.rate;
-    let container = Container::from_extension(ext);
-    let mut cmd = raw_video_command(ffmpeg, dimensions, output_rate);
+    let container = Container::from_format(output.format);
+    let mut cmd = raw_video_command(ffmpeg, dimensions, output_rate, output.stdout);
 
     let video_only = container.has_video_only_output();
     // FFmpeg requires every input to appear before output-specific options such as -map.
@@ -118,7 +140,8 @@ pub(crate) fn command(
         cmd.args(["-map", "0:v:0"]);
     }
 
-    append_video_options(&mut cmd, container, args, timing.video_quality);
+    let presets = output.presets();
+    append_video_options(&mut cmd, presets, args, timing.video_quality);
     if !video_only {
         let chapter_input = if timing.chapter_metadata.is_some() {
             "2"
@@ -151,7 +174,7 @@ pub(crate) fn command(
         }
         append_audio_options(
             &mut cmd,
-            container,
+            presets,
             args,
             timing.speed,
             timing.duration,
@@ -159,7 +182,7 @@ pub(crate) fn command(
             timing.source_audio_bitrates,
         );
     }
-    if container.supports_faststart() {
+    if !output.stdout && container.supports_faststart() {
         cmd.args(["-movflags", "+faststart"]);
     }
     // Some encoders choose a nearby conventional rate (119.88 -> 120).
@@ -173,6 +196,11 @@ pub(crate) fn command(
         "-enc_time_base:v",
         &format!("{}:{}", output_rate.den, output_rate.num),
     ]);
+    if output.stdout {
+        // The explicit pipe protocol stays non-seekable even when stdout is
+        // redirected to a regular file. Extra options can replace this format.
+        output.append_streaming_options(&mut cmd, args);
+    }
     cmd.args(args.extra_encoder_args());
     cmd
 }
@@ -264,7 +292,10 @@ mod tests {
             // encoder query, even when its encoder is selected explicitly.
             let quality = prepare_video_quality(
                 &missing_ffmpeg,
-                "gif",
+                Output {
+                    format: "gif",
+                    stdout: false,
+                },
                 &args,
                 VideoQualityInput {
                     source_crf: None,
@@ -289,7 +320,10 @@ mod tests {
                     source_audio_bitrates: &[],
                     chapter_metadata: None,
                 },
-                "gif",
+                Output {
+                    format: "gif",
+                    stdout: false,
+                },
                 &args,
             );
             let options = cmd
@@ -350,7 +384,10 @@ mod tests {
                 source_audio_bitrates: &[Some(128_000)],
                 chapter_metadata: None,
             },
-            "mp4",
+            Output {
+                format: "mp4",
+                stdout: false,
+            },
             &args,
         );
         command.arg("staged.mp4");
@@ -409,7 +446,10 @@ mod tests {
                 Args::try_parse_from(["rife", "-i", "in.mp4", "-e", extra, "out.mp4"]).unwrap();
             let quality = prepare_video_quality(
                 &missing_ffmpeg,
-                "mp4",
+                Output {
+                    format: "mp4",
+                    stdout: false,
+                },
                 &args,
                 VideoQualityInput {
                     source_crf: Some("19"),

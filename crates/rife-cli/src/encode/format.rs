@@ -27,11 +27,11 @@ pub(super) enum Container {
 }
 
 impl Container {
-    pub(super) fn from_extension(extension: &str) -> Self {
-        match extension {
+    pub(super) fn from_format(format: &str) -> Self {
+        match format {
             "mp4" | "m4v" | "mov" => Self::Mp4,
-            "mkv" => Self::Matroska,
-            "ts" | "m2ts" => Self::TransportStream,
+            "mkv" | "matroska" => Self::Matroska,
+            "ts" | "m2ts" | "mpegts" => Self::TransportStream,
             "webm" => Self::WebM,
             "avi" => Self::Avi,
             "3gp" | "3g2" => Self::Mobile3gp,
@@ -145,10 +145,10 @@ pub(super) fn append_video_options(
     }
 }
 
-pub(crate) fn carries_audio(extension: &str) -> bool {
-    !Container::from_extension(extension).has_video_only_output()
+pub(crate) fn carries_audio(format: &str) -> bool {
+    !Container::from_format(format).has_video_only_output()
 }
 
-pub(crate) fn supports_timed_metadata(extension: &str) -> bool {
-    !Container::from_extension(extension).has_video_only_output()
+pub(crate) fn supports_timed_metadata(format: &str) -> bool {
+    !Container::from_format(format).has_video_only_output()
 }

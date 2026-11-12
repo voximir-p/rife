@@ -16,7 +16,7 @@ pub(super) fn validate_encoding(
     cancel: &CancellationToken,
 ) -> Result<()> {
     command.stdin(Stdio::piped()).stdout(Stdio::null());
-    let mut child = ManagedChild::spawn(command, "FFmpeg encoding", cancel.clone())?;
+    let mut child = ManagedChild::encoder(command, cancel.clone(), None)?;
     let mut pipe = child.take_stdin()?;
     let write = write_blank_frame(&mut pipe, dimensions, cancel);
     drop(pipe);

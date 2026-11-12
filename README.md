@@ -49,6 +49,12 @@ The application has been built and runtime-tested on **Windows x64 and Linux x64
 # Double the frame rate without changing playback speed
 rife -i input.mp4 -f 2 output.mp4
 
+# Send the interpolated video directly to a player
+rife -i input.mp4 -f 2 - | ffplay -
+
+# Choose the streamed container and encoders
+rife -i input.mp4 -f 2 -e "-f nut -c:v ffv1 -c:a pcm_s16le" - | ffplay -
+
 # Create half-speed video while keeping the original frame rate
 rife -i input.mp4 -s 0.5 slow.mp4
 
@@ -87,7 +93,7 @@ rife -i input.mp4 -e "-c:v ffv1 -c:a pcm_s16le" output.mkv
 | Option                                      | Description                                                                                                        |
 | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | `-i, --input FILE`                          | **Required.** Input video.                                                                                         |
-| `OUTPUT`                                    | **Required.** Video filename or image sequence pattern, such as `frames/frame_%08d.png`.                            |
+| `OUTPUT`                                    | **Required.** Video filename, image sequence pattern such as `frames/frame_%08d.png`, or `-` for binary media on stdout. |
 | `-m, --model MODEL`                         | Model directory name. Default: `rife-v4.25`.                                                                       |
 | `-f, --fps-scale FACTOR`                    | Output FPS divided by input FPS. Default: `1`.                                                                     |
 | `-s, --speed FACTOR`                        | Playback speed. Default: `1`; `0.5` is half-speed and `2` is double-speed.                                         |
@@ -108,6 +114,38 @@ Chapter boundaries and MKV subtitle cue timestamps and durations follow the same
 
 GIF output uses a palette generated from the video for better colors, including with `-e "-c:v gif"`. Palette generation can add saving time and affects file size.
 
+### Streaming output
+
+Use `-` as the positional output to write encoded media to stdout. The default is
+NUT with H.264 video and the usual CRF/bitrate and audio policy; `ffplay -` detects
+it automatically. After the initial validation and frame-counting pass, original,
+interpolated, and held frames are sent in timeline order as they become ready.
+Frames travel through bounded memory buffers and OS pipes, without temporary
+frame files or a completed video waiting on disk.
+
+Streaming uses low-delay encoder settings and flushes each ready frame and
+encoded packet. The default H.264 encoder uses zero-latency tuning with the same
+quality target; file encoding keeps its existing settings. Progress, diagnostics,
+and errors go to stderr, so they do not contaminate the media stream. Input remains
+a file supplied with `-i`.
+
+Override the container with `-e "-f FORMAT"` and encoders with the usual extra
+options. The chosen format must support a non-seekable output. For example,
+fragmented MP4 can use `-e "-f mp4 -movflags frag_every_frame+empty_moov"`. These
+settings are checked before frame counting, using a temporary sample that is
+never sent to stdout.
+
+Extra options can override the low-delay defaults. Custom encoders, formats, and
+the receiving player may introduce their own buffering. For example,
+`-e "-f matroska"` selects the previous stdout container, whose muxer can delay
+packets while completing a cluster. Processing runs as fast as possible; it does
+not insert extra frames to cover playback stalls.
+
+Stdout has no output-file lock or replacement step, and `--overwrite` has no
+effect on it. Bytes are sent as encoding proceeds; an error or cancellation may
+leave the receiver with a partial stream. Closing the receiving pipe stops the
+job with a media-processing error and cleans up temporary processing files.
+
 ### Image sequences
 
 Use exactly one `%d` or `%0Nd` placeholder in the output filename, following [FFmpeg's image-sequence syntax](https://ffmpeg.org/ffmpeg-formats.html#image2-2). For example, `frame_%08d.png` produces `frame_00000001.png`, `frame_00000002.png`, and so on. Numbering starts at 1; `%%` represents a literal percent sign. The output directory must already exist. `--fps-scale` and `--speed` determine which frames are generated as they do for video output; individual images do not store the playback frame rate.
@@ -120,9 +158,9 @@ Frames are saved to their final names only after encoding succeeds. Any existing
 
 Output conflicts and invalid argument combinations are checked before frame counting. Encoding settings are checked with a temporary sample before counting or loading the model. Errors that depend on the decoded frame count or native model initialization are reported when those stages run; output paths are checked again before saving.
 
-Temporary processing files use the OS temporary directory. If rife cannot create a temporary folder there, it uses the output's parent directory. Finished outputs are transferred to the output location after encoding succeeds, including when that location is on another drive.
+Temporary processing files use the OS temporary directory. For file outputs, if rife cannot create a temporary folder there, it uses the output's parent directory. Finished files are transferred to the output location after encoding succeeds, including when that location is on another drive. Streaming output requires a usable OS temporary directory for processing state.
 
-Backend failures show the actual failure reason and raw diagnostics, followed by a blank line. FFmpeg and FFprobe failures end with `error: media processing failed`; native inference failures end with `error: native backend failed`. Failed jobs clean up their temporary files and output locks and preserve existing outputs.
+Backend failures show the actual failure reason and raw diagnostics, followed by a blank line. FFmpeg and FFprobe failures end with `error: media processing failed`; native inference failures end with `error: native backend failed`. Failed jobs clean up their temporary files and any output locks, and preserve existing file outputs.
 
 Verbose output shows Source and Target first, followed by frame counting, model loading, Device, and processing. Counting shows the number of video frames counted so far, then changes to green `Counted N frames in total` when finished. Loading changes to green Loaded when the model is ready. When interpolation ends, the Processed line reports its elapsed time. A separate Saving progress bar, in the same color as Processing, tracks output encoding with its own timer. The final green Saved line reports the saving time; both summaries remain visible. Live status rows keep the cursor at the start of the row and disappear on Ctrl+C while leaving the terminal’s own cancellation indicator and cursor position unchanged. Redirected logs contain completed messages rather than live progress.
 

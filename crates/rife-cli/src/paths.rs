@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Voximir.
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::{cli::Args, config, images::Sequence};
+use crate::{config, images::Sequence};
 use anyhow::{Context, Result, bail, ensure};
 use rife_core::{CancellationToken, Model};
 use std::{
@@ -13,8 +13,15 @@ use std::{
 };
 use tempfile::{Builder, TempDir, TempPath};
 
-pub(crate) fn staging_directory(output_parent: &Path) -> Result<TempDir> {
-    staging_directory_in(&env::temp_dir(), output_parent)
+pub(crate) fn staging_directory(output_parent: Option<&Path>) -> Result<TempDir> {
+    if let Some(parent) = output_parent {
+        staging_directory_in(&env::temp_dir(), parent)
+    } else {
+        Builder::new()
+            .prefix(&config::temp_prefix())
+            .tempdir_in(env::temp_dir())
+            .context("unable to create temporary processing directory")
+    }
 }
 
 fn staging_directory_in(preferred: &Path, output_parent: &Path) -> Result<TempDir> {
@@ -57,34 +64,37 @@ pub(crate) fn find_model(root: &Path, model: &Model) -> Result<PathBuf> {
     )
 }
 
-pub(crate) fn resolve_paths(
-    args: &Args,
-    cancel: &CancellationToken,
-) -> Result<(PathBuf, PathBuf, PathBuf)> {
-    let input = dunce::canonicalize(&args.input)
-        .with_context(|| format!("input does not exist: {}", args.input.display()))?;
+pub(crate) fn resolve_input(path: &Path) -> Result<PathBuf> {
+    let input = dunce::canonicalize(path)
+        .with_context(|| format!("input does not exist: {}", path.display()))?;
     ensure!(input.is_file(), "input must be a file");
+    Ok(input)
+}
 
-    let filename = args
-        .output
+pub(crate) fn resolve_output(
+    path: &Path,
+    input: &Path,
+    overwrite: bool,
+    cancel: &CancellationToken,
+) -> Result<(PathBuf, PathBuf)> {
+    let filename = path
         .file_name()
         .filter(|name| *name != OsStr::new(".") && *name != OsStr::new(".."))
         .context("output must be a file path")?;
-    let output_parent = args.output.parent().filter(|p| !p.as_os_str().is_empty());
+    let output_parent = path.parent().filter(|p| !p.as_os_str().is_empty());
     let parent = dunce::canonicalize(output_parent.unwrap_or(Path::new(".")))
         .context("output directory does not exist")?;
     let output = parent.join(filename);
-
     ensure!(
         output.extension().is_some(),
         "output must have a file extension"
     );
     if let Some(sequence) = Sequence::parse(&output)? {
-        sequence.preflight(&parent, &input, args.overwrite, cancel)?;
+        sequence.preflight(&parent, input, overwrite, cancel)?;
     } else {
-        validate_output(&input, &output, args.overwrite)?;
+        validate_output(input, &output, overwrite)?;
     }
-    Ok((input, output, parent))
+    Ok((output, parent))
 }
 
 pub(crate) fn validate_output(input: &Path, output: &Path, overwrite: bool) -> Result<()> {
@@ -196,6 +206,12 @@ fn output_tempfile(parent: &Path) -> Result<TempPath> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::Args;
+    fn resolve_paths(args: &Args, cancel: &CancellationToken) -> Result<(PathBuf, PathBuf)> {
+        let input = resolve_input(&args.input)?;
+        resolve_output(&args.output, &input, args.overwrite, cancel)
+    }
+
     use clap::Parser;
     fn temp() -> TempDir {
         tempfile::tempdir().unwrap()
@@ -241,7 +257,7 @@ mod tests {
         let root = temp();
         let output = root.path().join("output.mp4");
         for overwrite in [false, true] {
-            let staging = staging_directory(root.path()).unwrap();
+            let staging = staging_directory(Some(root.path())).unwrap();
             let staging_path = staging.path().to_path_buf();
             let staged = staging.path().join("encoded.mp4");
             let expected = vec![if overwrite { 42 } else { 21 }; 200_000];

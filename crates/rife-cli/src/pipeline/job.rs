@@ -23,6 +23,7 @@ pub(super) struct PreparedJob {
     // Fields drop in declaration order: remove staging before releasing the lock.
     pub staging: TempDir,
     pub args: Args,
+    pub input: PathBuf,
     pub ffmpeg: PathBuf,
     pub model: PathBuf,
     pub info: media::VideoInfo,
@@ -41,7 +42,8 @@ pub(super) struct PlannedJob {
 
 impl PreparedJob {
     pub fn prepare(args: Args, cancel: &CancellationToken, ui: &Ui) -> Result<Self> {
-        let destination = Destination::acquire(&args, cancel, ui)?;
+        let input = paths::resolve_input(&args.input)?;
+        let destination = Destination::acquire(&args, &input, cancel, ui)?;
         let exe = env::current_exe().context("unable to locate the current executable")?;
         let root = dunce::simplified(&exe)
             .parent()
@@ -50,14 +52,9 @@ impl PreparedJob {
         let ffprobe = paths::tool_path(root, "ffprobe")?;
         let model = paths::find_model(root, &args.model)?;
         validate_options(&args, &destination)?;
-        let staging = paths::staging_directory(&destination.parent)?;
+        let staging = paths::staging_directory(destination.parent())?;
         let staged_output = destination.stage(staging.path())?;
-        let info = media::probe(
-            &ffprobe,
-            &destination.input,
-            cancel,
-            !destination.is_sequence(),
-        )?;
+        let info = media::probe(&ffprobe, &input, cancel, !destination.is_sequence())?;
         let (numerator, denominator) = playback(&args).fps_ratio()?;
         let output_rate = info.rate.scaled(numerator, denominator)?;
         validate_audio(&args, &destination, &info)?;
@@ -66,7 +63,7 @@ impl PreparedJob {
         } else {
             encode::prepare_video_quality(
                 &ffmpeg,
-                &destination.extension,
+                destination.encoder_output(&args),
                 &args,
                 encode::VideoQualityInput {
                     source_crf: info.source_crf.as_deref(),
@@ -78,6 +75,7 @@ impl PreparedJob {
         let mut job = Self {
             staging,
             args,
+            input,
             ffmpeg,
             model,
             info,
@@ -95,7 +93,7 @@ impl PreparedJob {
     fn prepare_chapters(&mut self) -> Result<()> {
         if !self.destination.is_sequence()
             && encode::requires_retiming(self.args.speed)
-            && encode::supports_timed_metadata(&self.destination.extension)
+            && encode::supports_timed_metadata(self.destination.format(&self.args))
             && !self.info.chapters.is_empty()
         {
             let metadata = dunce::simplified(self.staging.path()).join("chapters.ffmetadata");
@@ -130,7 +128,7 @@ impl PreparedJob {
             encode::command(
                 &self.ffmpeg,
                 dimensions,
-                &self.destination.input,
+                &self.input,
                 encode::Timing {
                     rate: self.output_rate,
                     video_quality: quality,
@@ -140,7 +138,7 @@ impl PreparedJob {
                     source_audio_bitrates: &self.info.audio_bitrates,
                     chapter_metadata: self.chapter_metadata.as_deref(),
                 },
-                &self.destination.extension,
+                self.destination.encoder_output(&self.args),
                 &self.args,
             )
         }
@@ -190,8 +188,12 @@ impl PreparedJob {
 
     pub fn plan(self, input_frames: u64, cancel: &CancellationToken) -> Result<PlannedJob> {
         let schedule = FrameSchedule::for_playback(input_frames, playback(&self.args))?;
-        self.destination
-            .validate_count(schedule.output_frames(), self.args.overwrite, cancel)?;
+        self.destination.validate_count(
+            &self.input,
+            schedule.output_frames(),
+            self.args.overwrite,
+            cancel,
+        )?;
         let speed = self.args.fps_scale * input_frames as f64 / schedule.output_frames() as f64;
         if let Some(metadata) = &self.chapter_metadata {
             self.write_chapters(metadata, speed)?;
@@ -227,7 +229,7 @@ fn validate_options(args: &Args, destination: &Destination) -> Result<()> {
     args.jobs.clone().for_devices(device_count)?;
     destination.validate_minimum_count(minimum.output_frames())?;
     ensure!(
-        !destination.carries_audio()
+        !destination.carries_audio(args)
             || !encode::requires_retiming(args.speed)
             || args.audio_codec() != Some("copy"),
         "audio codec copy cannot be used when playback speed changes"
@@ -236,7 +238,7 @@ fn validate_options(args: &Args, destination: &Destination) -> Result<()> {
 }
 
 fn validate_audio(args: &Args, destination: &Destination, info: &media::VideoInfo) -> Result<()> {
-    let encoded = destination.carries_audio()
+    let encoded = destination.carries_audio(args)
         && args.audio_codec().map_or_else(
             || encode::requires_retiming(args.speed),
             |codec| codec != "copy",

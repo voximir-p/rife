@@ -21,7 +21,7 @@ use std::process::Stdio;
 pub(crate) fn run(args: Args, cancel: CancellationToken, ui: &Ui) -> Result<()> {
     let job = PreparedJob::prepare(args, &cancel, ui)?;
     job.report(ui);
-    let count = decode::count_frames(&job.ffmpeg, &job.destination.input, &job.info, &cancel, ui)?;
+    let count = decode::count_frames(&job.ffmpeg, &job.input, &job.info, &cancel, ui)?;
     execute(job.plan(count, &cancel)?, &cancel, ui)
 }
 
@@ -33,7 +33,7 @@ fn execute(job: PlannedJob, cancel: &CancellationToken, ui: &Ui) -> Result<()> {
         mut encoder,
     } = job;
     let mut decoder = ManagedChild::spawn(
-        decode::command(&job.ffmpeg, &job.destination.input, job.info.rate),
+        decode::command(&job.ffmpeg, &job.input, job.info.rate),
         "FFmpeg decoding",
         cancel.clone(),
     )?;
@@ -41,10 +41,14 @@ fn execute(job: PlannedJob, cancel: &CancellationToken, ui: &Ui) -> Result<()> {
     cancel.check()?;
     encoder
         .stdin(Stdio::from(worker.take_stdout()))
-        .stdout(Stdio::piped());
-    let mut encoder = ManagedChild::spawn(encoder, "FFmpeg encoding", cancel.clone())?;
+        .stdout(if job.destination.is_stdout() {
+            Stdio::inherit()
+        } else {
+            Stdio::null()
+        });
     let mut progress = ui.progress(Some(schedule.output_frames()));
-    encoder.track_progress(progress.encoded_frames());
+    let mut encoder =
+        ManagedChild::encoder(encoder, cancel.clone(), Some(progress.encoded_frames()))?;
     let result = worker
         .process(|done| progress.advance(done))
         .and_then(|frames| {
@@ -55,6 +59,7 @@ fn execute(job: PlannedJob, cancel: &CancellationToken, ui: &Ui) -> Result<()> {
             cancel.check()?;
             job.destination.commit(
                 &job.staged_output,
+                &job.input,
                 schedule.output_frames(),
                 job.args.overwrite,
                 cancel,

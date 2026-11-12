@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 //! Resolve explicit quality, source CRF and count-dependent bitrate fallback.
-use super::format::{Container, VideoPreset};
+use super::{Output, format::VideoPreset};
 use crate::cli::Args;
 use anyhow::Context;
 use rife_core::CancellationToken;
@@ -54,12 +54,12 @@ pub(crate) struct VideoQualityInput<'a> {
 
 pub(crate) fn prepare_video_quality(
     ffmpeg: &Path,
-    extension: &str,
+    output: Output<'_>,
     args: &Args,
     input: VideoQualityInput<'_>,
     cancel: &CancellationToken,
 ) -> anyhow::Result<QualityPlan> {
-    let container = Container::from_extension(extension);
+    let container = output.presets();
     if args.extra_video_rate_control()
         || (container.has_video_only_output() && args.video_codec().is_none())
         || container.uses_gif_palette(args.video_codec())
@@ -79,7 +79,7 @@ pub(crate) fn prepare_video_quality(
         .or(VideoPreset::for_container(container).codec)
     {
         Some(codec) => Some(Cow::Borrowed(codec)),
-        None => query_muxer_video_codec(ffmpeg, extension, cancel)?.map(Cow::Owned),
+        None => query_muxer_video_codec(ffmpeg, output.format, cancel)?.map(Cow::Owned),
     };
 
     if let Some(codec) = codec.as_deref()
@@ -95,11 +95,11 @@ pub(crate) fn prepare_video_quality(
 
 fn query_muxer_video_codec(
     ffmpeg: &Path,
-    extension: &str,
+    format: &str,
     cancel: &CancellationToken,
 ) -> anyhow::Result<Option<String>> {
     let mut command = Command::new(ffmpeg);
-    command.args(["-hide_banner", "-h", &format!("muxer={extension}")]);
+    command.args(["-hide_banner", "-h", &format!("muxer={format}")]);
     let output = match crate::process::capture_output_named(command, "FFmpeg encoder query", cancel)
     {
         Ok(output) => String::from_utf8_lossy(&output).into_owned(),

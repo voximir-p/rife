@@ -14,6 +14,7 @@ import argparse
 from array import array
 from fractions import Fraction
 import json
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -53,10 +54,13 @@ def run(*command, succeeds=True):
     return result.stdout
 
 
-def rife(*arguments, succeeds=True, model=args.model, gpu=args.gpu):
+def rife_command(*arguments, model=args.model, gpu=args.gpu):
     model_options = ["-m", model] if model is not None else []
-    return run(executable, "--gpu=" + gpu, *model_options,
-               *arguments, succeeds=succeeds)
+    return [str(arg) for arg in [executable, "--gpu=" + gpu, *model_options, *arguments]]
+
+
+def rife(*arguments, succeeds=True, model=args.model, gpu=args.gpu):
+    return run(*rife_command(*arguments, model=model, gpu=gpu), succeeds=succeeds)
 
 
 def hashes(path):
@@ -176,6 +180,122 @@ with tempfile.TemporaryDirectory(prefix="rife-smoke-") as directory:
     assert re.search(r"^ +Source 64x64 @ 29\.97 fps\n +Target 64x64 @ 59\.94 fps$", log, re.M), log
     assert not re.search(r"^ *Encoding|finalizing", log, re.M), log
     assert not re.search(r"Done:|^ *Video |^ *Model |Scenes|…|\.\.\.|Extracting frames:|Encoding video:|\x1b|\n\n", log, re.M), log
+    # Hold the third source frame back: original and inferred frames must leave
+    # the actual native worker before another input frame or EOF is available.
+    from concurrent.futures import ThreadPoolExecutor
+    model_name = args.model or re.search(r"Loaded model `([^`]+)`", log).group(1)
+    live_state = test_root / "live-worker"
+    live_state.mkdir()
+    live_config = live_state / "config.json"
+    live_config.write_text(json.dumps({
+        "width": 64, "height": 64, "input_frames": 3, "fps_scale": "2", "speed": "1",
+        "threshold": "1", "devices": args.gpu, "jobs": "1:2:2", "stream_output": True,
+    }))
+    native = subprocess.Popen([str(executable), "--__rife-native-worker", str(live_config),
+                               str(runtime / "models" / model_name)], stdin=subprocess.PIPE,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    frame_bytes = 64 * 64 * 3
+    with ThreadPoolExecutor(max_workers=1) as readers:
+        early_frames = readers.submit(native.stdout.read, frame_bytes * 2)
+        try:
+            native.stdin.write(pixels[:frame_bytes * 2])
+            native.stdin.flush()
+            first_pair = early_frames.result(timeout=args.timeout)
+            assert len(first_pair) == frame_bytes * 2, "Worker buffered ready frames until EOF"
+            assert first_pair[:frame_bytes] == pixels[:frame_bytes], "Original frame was omitted or changed"
+            native.stdin.write(pixels[frame_bytes * 2:frame_bytes * 3])
+            native.stdin.close()
+            native.stdin = None
+            remainder, diagnostics = native.communicate(timeout=args.timeout)
+            assert native.returncode == 0, diagnostics
+        finally:
+            if native.poll() is None:
+                native.kill()
+                native.communicate(timeout=args.timeout)
+    native_frames = first_pair + remainder
+    assert len(native_frames) == frame_bytes * 6
+    expected = hashes(test_root / "threshold-1.nut")
+    for number in range(4):
+        assert hashlib.md5(native_frames[number * frame_bytes:(number + 1) * frame_bytes]).hexdigest() == expected[number]
+    assert native_frames[frame_bytes * 4:] == pixels[frame_bytes * 2:frame_bytes * 3] * 2, "Final original frame was not held"
+
+    # A literal dash is a media sink, never an output path or a lock target.
+    dash_file = test_root / "-"
+    dash_file.write_bytes(b"leave this file alone")
+
+    def stream_output(*options, succeeds=True):
+        result = subprocess.run(rife_command("-i", source, *options, "-"), cwd=test_root,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=args.timeout)
+        assert (result.returncode == 0) == succeeds, result.stderr.decode(errors="replace")
+        assert dash_file.read_bytes() == b"leave this file alone"
+        check_cleanup()
+        return result
+
+    streamed = stream_output("-f", "2", "-v")
+    assert streamed.stdout.startswith(b"nut/multimedia container"), "Media stdout contains text or lacks NUT framing"
+    assert b"Processed 12 frames" in streamed.stderr and b"Saved 12 frames" in streamed.stderr
+    inspected = subprocess.run([str(ffprobe), "-v", "error", "-count_frames", "-show_streams", "-show_format",
+                                "-of", "json", "-i", "pipe:0"], input=streamed.stdout,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=args.timeout)
+    assert inspected.returncode == 0, inspected.stderr
+    pipe_info = json.loads(inspected.stdout)
+    assert pipe_info["format"]["format_name"] == "nut"
+    video = next(stream for stream in pipe_info["streams"] if stream["codec_type"] == "video")
+    assert video["codec_name"] == "h264" and int(video["nb_read_frames"]) == 12
+    assert any(stream["codec_name"] == "pcm_s16le" for stream in pipe_info["streams"])
+    default_stream = test_root / "streamed-default.mkv"
+    default_stream.write_bytes(streamed.stdout)
+    default_control = test_root / "default-control.mkv"
+    rife("-i", source, "-f", "2", "-e", "-tune zerolatency", default_control)
+    assert hashes(default_stream) == hashes(default_control), "Stream quality differs from file output with matching low-delay tuning"
+
+    lossless = stream_output("-f", "2", "-e", "-f nut -c:v ffv1 -c:a pcm_s16le")
+    pipe_file = test_root / "streamed.nut"
+    pipe_file.write_bytes(lossless.stdout)
+    assert hashes(pipe_file) == hashes(test_root / "threshold-0.3.nut")
+    retimed = stream_output("-f", "1.5", "-s", "0.5", "-e", "-f nut -c:v ffv1 -c:a pcm_s16le")
+    pipe_file.write_bytes(retimed.stdout)
+    control = test_root / "retimed-control.nut"
+    frames(control, "-f", "1.5", "-s", "0.5")
+    assert hashes(pipe_file) == hashes(control)
+    audio_check(pipe_file, 0.4004, 0.05, 0.35, 6)
+
+    fragmented = stream_output("-f", "2", "-e", "-f mp4 -movflags frag_keyframe+empty_moov -c:a aac")
+    pipe_file.write_bytes(fragmented.stdout)
+    assert len(hashes(pipe_file)) == 12
+    failed_stream = stream_output("-v", "-e", "-f mp4 -c:a aac", succeeds=False)
+    assert failed_stream.stdout == b"" and b"seek" in failed_stream.stderr.lower()
+    assert failed_stream.stderr.endswith(b"\n\nerror: media processing failed\n")
+    assert not re.search(rb"^ *(?:Source|Target|Counted|Loaded|Processed|Saved)\b", failed_stream.stderr, re.M)
+
+    closed = subprocess.Popen(rife_command("-i", source, "-f", "2", "-"), cwd=test_root,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    closed.stdout.close()
+    closed.stdout = None
+    _, errors = closed.communicate(timeout=args.timeout)
+    assert closed.returncode != 0 and errors.endswith(b"\n\nerror: media processing failed\n"), errors
+    check_cleanup()
+
+    if os.name == "posix":
+        from concurrent.futures import ThreadPoolExecutor
+        import signal
+        interrupted = subprocess.Popen(rife_command("-i", source, "-f", "1024", "-"), cwd=test_root,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        with ThreadPoolExecutor(max_workers=1) as readers:
+            first_byte = readers.submit(interrupted.stdout.read, 1)
+            try:
+                assert first_byte.result(timeout=args.timeout), "Stream ended before cancellation"
+                for staging in os_temp.glob(f".{app}-*"):
+                    assert {item.name for item in staging.iterdir()} <= {
+                        "native-worker.json", "native.cancel", "chapters.ffmetadata"
+                    }, "Stream frames were staged on disk"
+            finally:
+                interrupted.send_signal(signal.SIGINT)
+                _, errors = interrupted.communicate(timeout=args.timeout)
+        assert interrupted.returncode == 130, errors
+        check_cleanup()
+    print("Passed: NUT stdout auto-detection, clean media bytes, format overrides, RGB/timing/audio, preflight, broken pipes and cancellation.", flush=True)
+
     expected_images = hashes(test_root / "threshold-0.3.nut")
     for extension in ["png", "PNG", "bmp", "tiff", "ppm"]:
         directory = test_root / f"frames-{extension}"

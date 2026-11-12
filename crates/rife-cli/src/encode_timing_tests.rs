@@ -10,10 +10,126 @@ use rife_core::CancellationToken;
 use serde_json::Value;
 use std::{
     fs,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
+
+#[test]
+#[ignore = "requires FFmpeg and FFprobe on PATH or RIFE_TEST_FFMPEG/RIFE_TEST_FFPROBE"]
+fn stdout_encodes_a_decodable_frame_before_more_input_or_eof() {
+    use crate::process::ManagedChild;
+    use std::{sync::mpsc, thread, time::Duration};
+    let directory = tempfile::tempdir().unwrap();
+    let source = fixture(directory.path(), 0);
+    let ffmpeg = tool("ffmpeg");
+    for (audio, explicit_format) in [(false, false), (true, false), (false, true), (true, true)] {
+        let cancel = CancellationToken::default();
+        let mut arguments = vec!["rife", "-i", "source.mkv"];
+        if !audio {
+            arguments.extend(["-e", "-an"]);
+        }
+        if explicit_format {
+            arguments.extend(["-e", "-f nut"]);
+        }
+        arguments.push("-");
+        let args = Args::try_parse_from(arguments).unwrap();
+        let mut command = encode::command(
+            &ffmpeg,
+            (16, 16),
+            &source,
+            encode::Timing {
+                rate: media::Rate { num: 30, den: 1 },
+                video_quality: &encode::VideoQuality::Crf("20".into()),
+                speed: 1.0,
+                duration: 1.0 / 30.0,
+                preserve_source_timing: true,
+                source_audio_bitrates: &[],
+                chapter_metadata: None,
+            },
+            encode::Output {
+                format: "nut",
+                stdout: true,
+            },
+            &args,
+        );
+        command
+            .arg("pipe:1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped());
+        let mut encoder = ManagedChild::encoder(command, cancel.clone(), None).unwrap();
+        let mut input = encoder.take_stdin().unwrap();
+        let mut command = Command::new(&ffmpeg);
+        command
+            .args([
+                "-v",
+                "error",
+                "-probesize",
+                "32",
+                "-analyzeduration",
+                "0",
+                "-fpsprobesize",
+                "0",
+                "-threads:v",
+                "1",
+                "-f",
+                "nut",
+                "-i",
+                "pipe:0",
+                "-map",
+                "0:v:0",
+                "-an",
+                "-pix_fmt",
+                "rgb24",
+                "-fps_mode:v",
+                "passthrough",
+                "-threads:v",
+                "1",
+                "-f",
+                "rawvideo",
+                "-flush_packets",
+                "1",
+                "pipe:1",
+            ])
+            .stdin(Stdio::from(encoder.take_stdout()))
+            .stdout(Stdio::piped());
+        let mut decoder =
+            ManagedChild::spawn(command, "FFmpeg incremental decoding", cancel.clone()).unwrap();
+        let mut output = decoder.take_stdout();
+        let (send, receive) = mpsc::sync_channel(1);
+        let reader = thread::spawn(move || {
+            let mut frame = vec![0; 16 * 16 * 3];
+            let result = output.read_exact(&mut frame).map(|()| frame);
+            let _ = send.send(result);
+            std::io::copy(&mut output, &mut std::io::sink()).unwrap();
+        });
+        input.write_all(&[200, 30, 80].repeat(16 * 16)).unwrap();
+        input.flush().unwrap();
+        // The encoder input stays open with no second frame. A header alone
+        // cannot satisfy this check: a real decoder must emit the RGB pixels.
+        // Its input format/thread settings isolate sender latency from the
+        // receiver's independent format probing and frame-thread buffering.
+        let frame = receive.recv_timeout(Duration::from_secs(30));
+        drop(input);
+        if frame.is_err() {
+            cancel.cancel();
+        }
+        let encoded = encoder.finish();
+        let decoded = decoder.finish();
+        reader.join().unwrap();
+        let frame = frame
+            .expect("encoder waited for more frames or EOF")
+            .unwrap();
+        encoded.unwrap();
+        decoded.unwrap();
+        assert!(frame.as_chunks::<3>().0.iter().all(|pixel| {
+            pixel
+                .iter()
+                .zip([200i16, 30, 80])
+                .all(|(&actual, expected)| (i16::from(actual) - expected).abs() <= 10)
+        }));
+    }
+}
 
 fn tool(name: &str) -> PathBuf {
     std::env::var_os(format!("RIFE_TEST_{}", name.to_ascii_uppercase()))
@@ -151,6 +267,7 @@ fn encode_fixture(
     frames: usize,
     speed: f64,
     preserve_source_timing: bool,
+    streaming: bool,
 ) -> Value {
     let ffmpeg = tool("ffmpeg");
     let info = media::probe(&tool("ffprobe"), input, &CancellationToken::default(), true).unwrap();
@@ -180,13 +297,24 @@ fn encode_fixture(
             source_audio_bitrates: &info.audio_bitrates,
             chapter_metadata: chapter_metadata.as_deref(),
         },
-        extension,
+        encode::Output {
+            format: if streaming { "matroska" } else { extension },
+            stdout: streaming,
+        },
         &args,
     );
     let mut child = command
-        .arg(output)
+        .arg(if streaming {
+            Path::new("pipe:1")
+        } else {
+            output
+        })
         .stdin(Stdio::piped())
-        .stdout(Stdio::null())
+        .stdout(if streaming {
+            Stdio::from(fs::File::create(output).unwrap())
+        } else {
+            Stdio::null()
+        })
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
@@ -256,83 +384,86 @@ fn subtitle_cues_and_chapters_follow_audio_timing() {
     let directory = tempfile::tempdir().unwrap();
     let input = fixture(directory.path(), 0);
     let original = probe(&input);
-    for (name, rate, frames, speed, preserve) in [
-        ("normal", media::Rate { num: 4, den: 1 }, 16, 1.0, true),
-        ("slow", media::Rate { num: 4, den: 1 }, 32, 0.5, false),
-        ("fast", media::Rate { num: 4, den: 1 }, 8, 2.0, false),
-        (
-            "rounded",
-            media::Rate { num: 4, den: 1 },
-            11,
-            16.0 / 11.0,
-            false,
-        ),
-        (
-            "fps_only",
-            media::Rate { num: 22, den: 5 },
-            18,
-            17.6 / 18.0,
-            true,
-        ),
-    ] {
-        let output = encode_fixture(
-            &input,
-            &directory.path().join(format!("{name}.mkv")),
-            rate,
-            frames,
-            speed,
-            preserve,
-        );
-        let factor = if preserve { 1.0 } else { speed };
-        check_chapters(&original, &output, 0.0, factor);
-        assert_eq!(output["format"]["tags"]["title"], "Timing fixture");
-        let source_subtitles = streams(&original, "subtitle");
-        let output_subtitles = streams(&output, "subtitle");
-        assert_eq!(output_subtitles.len(), 2);
-        for (before, after) in source_subtitles.iter().zip(output_subtitles) {
-            assert_eq!(before["codec_name"], after["codec_name"]);
-            assert_eq!(before["tags"]["language"], after["tags"]["language"]);
-            assert_eq!(before["tags"]["title"], after["tags"]["title"]);
-            assert_eq!(before["disposition"], after["disposition"]);
-            let original_packets = packets(&original, before);
-            let output_packets = packets(&output, after);
-            assert_eq!(original_packets.len(), output_packets.len());
-            for (source, result) in original_packets.iter().zip(output_packets) {
-                close(
-                    seconds(&result["pts_time"]),
-                    seconds(&source["pts_time"]) / factor,
-                );
-                close(
-                    seconds(&result["duration_time"]),
-                    seconds(&source["duration_time"]) / factor,
-                );
-                assert_eq!(source["data_hash"], result["data_hash"]);
+    for streaming in [false, true] {
+        for (name, rate, frames, speed, preserve) in [
+            ("normal", media::Rate { num: 4, den: 1 }, 16, 1.0, true),
+            ("slow", media::Rate { num: 4, den: 1 }, 32, 0.5, false),
+            ("fast", media::Rate { num: 4, den: 1 }, 8, 2.0, false),
+            (
+                "rounded",
+                media::Rate { num: 4, den: 1 },
+                11,
+                16.0 / 11.0,
+                false,
+            ),
+            (
+                "fps_only",
+                media::Rate { num: 22, den: 5 },
+                18,
+                17.6 / 18.0,
+                true,
+            ),
+        ] {
+            let output = encode_fixture(
+                &input,
+                &directory.path().join(format!("{name}-{streaming}.mkv")),
+                rate,
+                frames,
+                speed,
+                preserve,
+                streaming,
+            );
+            let factor = if preserve { 1.0 } else { speed };
+            check_chapters(&original, &output, 0.0, factor);
+            assert_eq!(output["format"]["tags"]["title"], "Timing fixture");
+            let source_subtitles = streams(&original, "subtitle");
+            let output_subtitles = streams(&output, "subtitle");
+            assert_eq!(output_subtitles.len(), 2);
+            for (before, after) in source_subtitles.iter().zip(output_subtitles) {
+                assert_eq!(before["codec_name"], after["codec_name"]);
+                assert_eq!(before["tags"]["language"], after["tags"]["language"]);
+                assert_eq!(before["tags"]["title"], after["tags"]["title"]);
+                assert_eq!(before["disposition"], after["disposition"]);
+                let original_packets = packets(&original, before);
+                let output_packets = packets(&output, after);
+                assert_eq!(original_packets.len(), output_packets.len());
+                for (source, result) in original_packets.iter().zip(output_packets) {
+                    close(
+                        seconds(&result["pts_time"]),
+                        seconds(&source["pts_time"]) / factor,
+                    );
+                    close(
+                        seconds(&result["duration_time"]),
+                        seconds(&source["duration_time"]) / factor,
+                    );
+                    assert_eq!(source["data_hash"], result["data_hash"]);
+                }
             }
+            let source_attachment = streams(&original, "attachment");
+            let output_attachment = streams(&output, "attachment");
+            assert_eq!(output_attachment.len(), 1);
+            assert_eq!(
+                source_attachment[0]["extradata_hash"],
+                output_attachment[0]["extradata_hash"]
+            );
+            assert_eq!(source_attachment[0]["tags"], output_attachment[0]["tags"]);
+            let audio = streams(&output, "audio")[0];
+            assert_eq!(audio["codec_name"], "pcm_s16le");
+            let audio_packets = packets(&output, audio);
+            close(seconds(&audio_packets[0]["pts_time"]), 0.0);
+            // A final PCM packet shorter than Matroska's millisecond time base has
+            // no duration_time. Count samples instead of relying on rounded ticks.
+            let audio_bytes: u64 = audio_packets
+                .iter()
+                .map(|packet| packet["size"].as_str().unwrap().parse::<u64>().unwrap())
+                .sum();
+            let sample_rate = seconds(&audio["sample_rate"]);
+            let channels = audio["channels"].as_u64().unwrap();
+            close(
+                audio_bytes as f64 / (2.0 * channels as f64 * sample_rate),
+                4.0 / factor,
+            );
         }
-        let source_attachment = streams(&original, "attachment");
-        let output_attachment = streams(&output, "attachment");
-        assert_eq!(output_attachment.len(), 1);
-        assert_eq!(
-            source_attachment[0]["extradata_hash"],
-            output_attachment[0]["extradata_hash"]
-        );
-        assert_eq!(source_attachment[0]["tags"], output_attachment[0]["tags"]);
-        let audio = streams(&output, "audio")[0];
-        assert_eq!(audio["codec_name"], "pcm_s16le");
-        let audio_packets = packets(&output, audio);
-        close(seconds(&audio_packets[0]["pts_time"]), 0.0);
-        // A final PCM packet shorter than Matroska's millisecond time base has
-        // no duration_time. Count samples instead of relying on rounded ticks.
-        let audio_bytes: u64 = audio_packets
-            .iter()
-            .map(|packet| packet["size"].as_str().unwrap().parse::<u64>().unwrap())
-            .sum();
-        let sample_rate = seconds(&audio["sample_rate"]);
-        let channels = audio["channels"].as_u64().unwrap();
-        close(
-            audio_bytes as f64 / (2.0 * channels as f64 * sample_rate),
-            4.0 / factor,
-        );
     }
 }
 
@@ -350,6 +481,7 @@ fn chapter_retiming_normalizes_source_start_and_supports_mp4() {
             media::Rate { num: 4, den: 1 },
             32,
             0.5,
+            false,
             false,
         );
         check_chapters(&source, &output, 10.0, 0.5);
@@ -390,6 +522,7 @@ fn retiming_accepts_inputs_without_subtitles_or_chapters() {
         media::Rate { num: 4, den: 1 },
         32,
         0.5,
+        false,
         false,
     );
     assert!(streams(&result, "subtitle").is_empty());

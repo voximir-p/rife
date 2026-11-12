@@ -128,6 +128,40 @@ Worker progress messages use the same refresh interval as the terminal, while
 loading, completion, and errors are reported immediately. Coalescing status must
 never limit frame I/O or weaken final count/exit validation.
 
+The positional output `-` selects a distinct stdout destination. Only file
+destinations resolve output paths, acquire locks, validate image names, or commit
+staged results. Input remains a canonical file; do not add stdin buffering or a
+capture subprocess. Both paths still use the same normalized count and exact
+schedule. Stdout defaults to NUT for immediate packet delivery, while retaining
+the existing H.264/CRF and audio preset policy. `encode/streaming.rs` keeps that
+default policy separate from the wire format and applies low-delay encoder,
+packet-flush and muxer settings before extra options. Effective `-e "-f FORMAT"`
+selection controls the chosen container's presets, quality probing, audio and timed-metadata handling.
+File extensions still determine image-sequence staging names.
+
+The worker config carries `stream_output` so its emit callback flushes every
+scheduled frame, including copies and held endpoints. File jobs retain buffered
+RGB writes. Raw encoder input has an explicit format, dimensions and clock, so
+stdout jobs disable unnecessary probing of that pipe. Do not add `nobuffer` input
+flags that can discard probed frames. Streaming has no frame or video cache on
+disk; only worker control state and optional retimed chapter metadata use staging.
+The native smoke regression withholds a third input frame until two output
+frames arrive, then verifies original, interpolated and final held frames. The
+FFmpeg opt-in regression requires a decoded frame before a second frame or EOF,
+with and without source audio. Its receiver specifies NUT and a single decoding
+thread to isolate sender delay from independent player probing/thread buffering.
+
+Encoder stdout is inherited only for a stdout destination. FFmpeg progress uses
+`pipe:2`; the existing stderr reader updates the saving counter and removes only
+recognized progress records from the diagnostic tail. Keep genuine interleaved
+errors. This avoids a media relay or another progress pipe/thread. Preflight also
+uses `pipe:1` as the media destination when streaming, with its stdout discarded,
+so non-seekable muxer restrictions are validated without sending sample bytes to
+the receiver. Wait for both worker and encoder success, and preserve media-error
+precedence on broken pipes. Stdout bytes cannot be rolled back. Stream jobs use
+OS temporary storage for worker/chapter state, with no destination-directory
+fallback.
+
 In the core, `engine/loading.rs` owns cancellable model reads and native network
 construction. Stream task processing and ordered output collection stay separate
 from scoped thread orchestration. Keep their generic callbacks, recycled frame

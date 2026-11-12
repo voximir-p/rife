@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Stream encoded media to stdout with `-` as the positional output, using NUT by default or a container selected through `-e "-f FORMAT"`.
 - Export interpolated frames as numbered image sequences with printf-style output patterns, preserving RGB pixels in lossless image formats.
 
 ### Changed
@@ -20,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Send original and interpolated frames to stdout as they become ready, with low-delay encoding instead of waiting for buffered output to finish.
 - Reject existing image sequences and invalid output settings before counting frames or loading the model.
 - Report native backend crashes with formatted error details, clean up temporary files and output locks, and preserve existing outputs.
 

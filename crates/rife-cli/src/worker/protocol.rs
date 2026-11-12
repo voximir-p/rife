@@ -14,6 +14,8 @@ pub(crate) struct Config {
     pub(super) width: u32,
     pub(super) height: u32,
     pub(super) input_frames: u64,
+    #[serde(default)]
+    pub(super) stream_output: bool,
     pub(super) fps_scale: String,
     pub(super) speed: String,
     pub(super) threshold: String,
@@ -28,6 +30,7 @@ impl Config {
             width: dimensions.0,
             height: dimensions.1,
             input_frames,
+            stream_output: args.streams_output(),
             fps_scale: args.fps_scale.to_string(),
             speed: args.speed.to_string(),
             threshold: args.threshold.to_string(),

@@ -171,6 +171,13 @@ fn stream(
         |frame| {
             output
                 .write_all(frame.pixels())
+                .and_then(|()| {
+                    if config.stream_output {
+                        output.flush()
+                    } else {
+                        Ok(())
+                    }
+                })
                 .context("could not stream native output to FFmpeg")
         },
         |frames| {

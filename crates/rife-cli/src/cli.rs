@@ -40,7 +40,7 @@ pub(crate) fn make_styles() -> ClapStyles {
     styles = make_styles()
 )]
 pub(crate) struct Args {
-    /// Input video (any format supported by the supplied FFmpeg build)
+    /// Input video file (any format supported by the supplied FFmpeg build)
     #[arg(short, long, value_name = "FILE")]
     pub(crate) input: PathBuf,
 
@@ -92,7 +92,7 @@ pub(crate) struct Args {
     #[arg(short, long)]
     pub(crate) verbose: bool,
 
-    /// Output video filename or image sequence pattern (e.g. frame_%08d.png)
+    /// Output file, image sequence pattern (e.g. frame_%08d.png), or - for NUT on stdout
     #[arg(value_name = "OUTPUT")]
     pub(crate) output: PathBuf,
 }
@@ -111,6 +111,14 @@ impl Args {
             .filter(|(name, _)| names.contains(name))
             .last()
             .and_then(|(_, value)| value)
+    }
+
+    pub(crate) fn streams_output(&self) -> bool {
+        self.output.as_os_str() == std::ffi::OsStr::new("-")
+    }
+
+    pub(crate) fn output_format(&self) -> Option<&str> {
+        self.encoder_option(&["-f"])
     }
 
     pub(crate) fn video_codec(&self) -> Option<&str> {
@@ -187,6 +195,20 @@ fn parse_threshold(value: &str) -> std::result::Result<f64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_stays_positional_and_accepts_a_stdout_marker() {
+        let args = Args::try_parse_from([APP_NAME, "-i", "video.mp4", "-f", "2", "-"]).unwrap();
+        assert_eq!(args.output, PathBuf::from("-"));
+        assert_eq!(args.fps_scale, 2.0);
+        let args =
+            Args::try_parse_from([APP_NAME, "-i", "video.mp4", "-e", "-f nut", "-"]).unwrap();
+        assert_eq!(args.output_format(), Some("nut"));
+        for flag in ["-o", "--output"] {
+            assert!(Args::try_parse_from([APP_NAME, "-i", "video.mp4", flag, "-"]).is_err());
+        }
+    }
+
     #[test]
     fn cli_defaults_are_supplied_by_clap() {
         let args = Args::try_parse_from([APP_NAME, "-i", "source.mp4", "out.mkv"]).unwrap();

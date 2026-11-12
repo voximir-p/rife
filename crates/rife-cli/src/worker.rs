@@ -523,7 +523,7 @@ mod tests {
                 let cancel = CancellationToken::default();
                 let _lock =
                     crate::output_lock::OutputLock::acquire(&output, true, &cancel, || {}).unwrap();
-                let staging = crate::paths::staging_directory(root.path()).unwrap();
+                let staging = crate::paths::staging_directory(Some(root.path())).unwrap();
                 staging_path = staging.path().to_path_buf();
                 fs::write(staging.path().join("encoded.mp4"), b"partial output").unwrap();
                 let mut worker = NativeWorker::start(
@@ -672,6 +672,7 @@ mod tests {
             let config = Config::new(&args, (64, 64), 34);
             let decoded: Config =
                 serde_json::from_slice(&serde_json::to_vec(&config).unwrap()).unwrap();
+            assert!(!decoded.stream_output);
             assert_eq!(
                 decoded.speed.parse::<f64>().unwrap().to_bits(),
                 args.speed.to_bits()
@@ -689,6 +690,16 @@ mod tests {
                 .output_frames()
             );
         }
+    }
+
+    #[test]
+    fn stdout_flush_policy_survives_the_worker_boundary() {
+        use clap::Parser;
+        let args = Args::try_parse_from(["rife", "-i", "input.mp4", "-"]).unwrap();
+        let config = Config::new(&args, (16, 16), 3);
+        let decoded: Config =
+            serde_json::from_slice(&serde_json::to_vec(&config).unwrap()).unwrap();
+        assert!(decoded.stream_output);
     }
 
     #[test]

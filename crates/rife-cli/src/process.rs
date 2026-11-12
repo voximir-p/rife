@@ -88,15 +88,21 @@ pub(crate) struct ManagedChild {
     stdout: Option<ChildStdout>,
     monitor: Option<JoinHandle<Result<ProcessExit>>>,
     diagnostics: Option<JoinHandle<VecDeque<String>>>,
-    progress: Option<JoinHandle<()>>,
     label: &'static str,
 }
 
-fn read_diagnostics(stderr: impl std::io::Read) -> VecDeque<String> {
+fn read_diagnostics(
+    stderr: impl std::io::Read,
+    progress: Option<&AtomicU64>,
+    encoding: bool,
+) -> VecDeque<String> {
     let mut lines = VecDeque::with_capacity(config::DIAGNOSTIC_LINES);
     for line in BufReader::new(stderr).lines() {
         match line {
             Ok(line) => {
+                if encoding && read_encoding_progress(&line, progress) {
+                    continue;
+                }
                 if lines.len() == config::DIAGNOSTIC_LINES {
                     lines.pop_front();
                 }
@@ -134,9 +140,27 @@ fn watch_process(child: Arc<Mutex<Child>>, cancel: CancellationToken) -> Result<
 
 impl ManagedChild {
     pub(crate) fn spawn(
+        command: Command,
+        label: &'static str,
+        cancel: CancellationToken,
+    ) -> Result<Self> {
+        Self::start(command, label, cancel, None, false)
+    }
+
+    pub(crate) fn encoder(
+        command: Command,
+        cancel: CancellationToken,
+        frames: Option<Arc<AtomicU64>>,
+    ) -> Result<Self> {
+        Self::start(command, "FFmpeg encoding", cancel, frames, true)
+    }
+
+    fn start(
         mut command: Command,
         label: &'static str,
         cancel: CancellationToken,
+        frames: Option<Arc<AtomicU64>>,
+        encoding: bool,
     ) -> Result<Self> {
         cancel.check()?;
         command.stderr(Stdio::piped());
@@ -145,7 +169,8 @@ impl ManagedChild {
             .with_context(|| format!("could not launch {label}"))?;
         let stdout = child.stdout.take();
         let stderr = child.stderr.take().expect("configured stderr pipe");
-        let diagnostics = thread::spawn(move || read_diagnostics(stderr));
+        let diagnostics =
+            thread::spawn(move || read_diagnostics(stderr, frames.as_deref(), encoding));
         let child = Arc::new(Mutex::new(child));
         let watched = Arc::clone(&child);
         let monitor = thread::spawn(move || watch_process(watched, cancel));
@@ -154,7 +179,6 @@ impl ManagedChild {
             stdout,
             monitor: Some(monitor),
             diagnostics: Some(diagnostics),
-            progress: None,
             label,
         })
     }
@@ -173,11 +197,6 @@ impl ManagedChild {
             .unwrap()
             .join()
             .map_err(|_| anyhow!("diagnostic reader panicked"))?;
-        if let Some(progress) = self.progress.take() {
-            progress
-                .join()
-                .map_err(|_| anyhow!("encoding progress reader panicked"))?;
-        }
         if !exit.status.success() {
             return Err(ProcessFailure {
                 label: self.label,
@@ -209,19 +228,10 @@ impl Drop for ManagedChild {
         if let Some(diagnostics) = self.diagnostics.take() {
             let _ = diagnostics.join();
         }
-        if let Some(progress) = self.progress.take() {
-            let _ = progress.join();
-        }
     }
 }
 
 impl ManagedChild {
-    pub(crate) fn track_progress(&mut self, frames: Arc<AtomicU64>) {
-        let stdout = self.take_stdout();
-        self.progress = Some(thread::spawn(move || {
-            read_encoding_progress(BufReader::new(stdout), &frames);
-        }));
-    }
     pub(crate) fn is_finished(&self) -> bool {
         self.monitor.is_none()
     }
@@ -242,15 +252,37 @@ impl ManagedChild {
     }
 }
 
-fn read_encoding_progress(reader: impl BufRead, frames: &AtomicU64) {
-    for line in reader.lines().map_while(std::result::Result::ok) {
-        if let Some(count) = line
-            .strip_prefix("frame=")
-            .and_then(|value| value.trim().parse().ok())
-        {
-            frames.fetch_max(count, Ordering::Relaxed);
-        }
+/// Recognize only FFmpeg progress keys; retain interleaved backend diagnostics.
+fn read_encoding_progress(line: &str, frames: Option<&AtomicU64>) -> bool {
+    let Some((key, value)) = line.split_once('=') else {
+        return false;
+    };
+    if key == "frame"
+        && let (Some(frames), Ok(count)) = (frames, value.trim().parse())
+    {
+        frames.fetch_max(count, Ordering::Relaxed);
     }
+    matches!(
+        key,
+        "frame"
+            | "fps"
+            | "bitrate"
+            | "total_size"
+            | "out_time_us"
+            | "out_time_ms"
+            | "out_time"
+            | "dup_frames"
+            | "drop_frames"
+            | "speed"
+            | "progress"
+    ) || key
+        .strip_prefix("stream_")
+        .and_then(|rest| rest.strip_suffix("_q"))
+        .is_some_and(|indexes| {
+            indexes
+                .split('_')
+                .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+        })
 }
 
 pub(crate) fn capture_output(command: Command, cancel: &CancellationToken) -> Result<Vec<u8>> {
@@ -352,8 +384,23 @@ mod tests {
     #[test]
     fn encoder_progress_tracks_reported_frames_monotonically() {
         let frames = AtomicU64::new(0);
-        read_encoding_progress(&b"frame=   3\nfps=1.5\nframe=bad\nprogress=continue\nframe=136\nframe=4\nprogress=end\n"[..], &frames);
+        for line in "frame=   3\nfps=1.5\nframe=bad\nprogress=continue\nframe=136\nframe=4\nprogress=end\nstream_0_0_q=23\n".lines() {
+            assert!(read_encoding_progress(line, Some(&frames)));
+        }
+        assert!(!read_encoding_progress(
+            "[encoder] error=bad codec",
+            Some(&frames)
+        ));
+        assert!(!read_encoding_progress("stream_failure_q=failed", None));
+        assert!(!read_encoding_progress("stream_q=failed", None));
         assert_eq!(frames.load(Ordering::Relaxed), 136);
+        let diagnostics = read_diagnostics(
+            &b"frame=140\n[encoder] error=bad codec\nstream_0_0_q=-1\nprogress=end\nvk warning\n"[..],
+            Some(&frames),
+            true,
+        );
+        assert_eq!(frames.load(Ordering::Relaxed), 140);
+        assert_eq!(diagnostics, ["[encoder] error=bad codec", "vk warning"]);
     }
     fn failure(
         label: &'static str,
