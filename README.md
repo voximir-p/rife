@@ -158,11 +158,36 @@ Frames are saved to their final names only after encoding succeeds. Any existing
 
 Output conflicts and invalid argument combinations are checked before frame counting. Encoding settings are checked with a temporary sample before counting or loading the model. Errors that depend on the decoded frame count or native model initialization are reported when those stages run; output paths are checked again before saving.
 
+Frame counting follows the decoded, normalized timeline rather than trusting a
+frame-count tag or a duration estimate. It works with variable frame rates and
+missing frame-count metadata. The counting pass avoids RGB conversion and frame transfers
+to reduce startup overhead.
+
 Temporary processing files use the OS temporary directory. For file outputs, if rife cannot create a temporary folder there, it uses the output's parent directory. Finished files are transferred to the output location after encoding succeeds, including when that location is on another drive. Streaming output requires a usable OS temporary directory for processing state.
 
 Backend failures show the actual failure reason and raw diagnostics, followed by a blank line. FFmpeg and FFprobe failures end with `error: media processing failed`; native inference failures end with `error: native backend failed`. Failed jobs clean up their temporary files and any output locks, and preserve existing file outputs.
 
-Verbose output shows Source and Target first, followed by frame counting, model loading, Device, and processing. Counting shows the number of video frames counted so far, then changes to green `Counted N frames in total` when finished. Loading changes to green Loaded when the model is ready. When interpolation ends, the Processed line reports its elapsed time. A separate Saving progress bar, in the same color as Processing, tracks output encoding with its own timer. The final green Saved line reports the saving time; both summaries remain visible. Live status rows keep the cursor at the start of the row and disappear on Ctrl+C while leaving the terminal’s own cancellation indicator and cursor position unchanged. Redirected logs contain completed messages rather than live progress.
+Verbose output shows Source and Target first, followed by frame counting, model loading, Device, and processing. Counting shows the number of video frames counted so far, then changes to green `Counted N frames in total` when finished. Loading changes to green Loaded when the model is ready.
+
+Live processing shows the output frame count, percentage, elapsed/estimated total
+processing time, and average output frames per second:
+
+```text
+  Processing [================>               ] 300/600 frames (50.0%) | 00:10/00:20 | 30.00 fps
+```
+
+The fps value includes original, interpolated, and held output frames. The
+right-hand clock is the estimated total duration, including elapsed time. Each clock uses `MM:SS`
+below one hour and `HH:MM:SS` from one hour onward, for example
+`00:11/01:02:35`. Fields are compacted on narrow terminals.
+
+When interpolation ends, the Processed line reports its elapsed time. A separate
+Saving progress bar, in the same color as Processing, uses elapsed/estimated total
+time with its own timer and no fps field. The final green Saved line reports the
+saving time; both summaries remain visible. Live status rows keep the cursor at
+the start of the row and disappear on Ctrl+C while leaving the terminal’s own
+cancellation indicator and cursor position unchanged. Redirected logs contain
+completed messages rather than live progress.
 
 ## Models
 

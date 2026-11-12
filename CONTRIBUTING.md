@@ -48,8 +48,9 @@ cargo clippy --workspace --all-targets --release --locked -- -D warnings
 cargo test --workspace --release --locked
 ```
 
-The opt-in muxing regressions generate small media fixtures and verify subtitle,
-chapter, and audio timing with FFmpeg/FFprobe. They do not require models or a GPU:
+The opt-in media regressions generate small fixtures and verify normalized frame
+counts, incremental encoding, and subtitle/chapter/audio timing with FFmpeg and
+FFprobe. They do not require models or a GPU:
 
 ```sh
 cargo test -p rife-cli --release --locked encode_timing_tests -- --ignored
@@ -115,7 +116,7 @@ The executable entry point only dispatches private worker mode or the CLI. Withi
 | `app.rs` | Signal handling, application lifetime, and exit presentation |
 | `pipeline.rs` and `pipeline/` | Job preparation, preflight, execution, and destination ownership |
 | `process.rs` | Media child supervision, diagnostic capture, and cancellation |
-| `decode.rs` | The normalization command shared by counting and processing |
+| `decode.rs` | Shared temporal normalization, internal frame counting, and RGB decoding |
 | `encode.rs` and `encode/` | Command construction, container presets, quality, and audio timing |
 | `worker.rs` and `worker/` | Native process supervision, private protocol, runtime, and RGB frame reading |
 | `diagnostics.rs` | Shared backend error presentation data |
@@ -174,6 +175,24 @@ The C++ backend is statically linked. Native build configuration and source over
 Image sequences use a separate `image2` encoder command: feed RGB8 directly, keep one image per scheduled frame, and leave image quality/pixel-format defaults to FFmpeg. Do not apply video presets or probe source bitrate packets for this path. `images.rs` parses numbered output patterns and commits a validated set of staged frames with bounded memory, same-filesystem preparation, backups, and rollback. Sequence jobs share a directory lock so differently padded or overlapping patterns cannot write concurrently. Preserve input protection and leave unrelated files untouched. The smoke suite compares decoded PNG/BMP/TIFF/PPM pixels against FFV1 output and checks numbering, replacement, errors, odd dimensions, and playback scheduling. Backend errors use one common terminal layout; failures caused by cleanup must not replace the original backend diagnosis.
 
 Keep preflight validation before Source/Target status and the counting pass. Scan existing sequence names using canonical pattern expansion, including sparse sequences, and repeat validation after acquiring the output lock. Validate argument-only scheduling/worker/audio-copy constraints first, then source-dependent bitrate and chapter requirements. Before counting, run the same encoder options against one blank RGB frame in staging, limiting video/audio/subtitle packets and duration. Zero-frame validation incorrectly fails some GIF/WebP encoders, so do not substitute it. This check uses the supplied FFmpeg rather than an extension/codec allowlist and must remain cancellable with bounded buffering and normal diagnostic cleanup. `QualityPlan` defers frame-scaled bitrate calculation until the actual count is available; the sample omits that count-dependent bitrate. Rewrite chapter metadata with the final effective speed before loading the model. Encoding command builders return options without a destination so validation and production can append their own limits/path. Runtime decoding, model initialization, count-dependent limits, and output races still require their normal checks.
+
+Counting uses the same `fps=fps=RATE:start_time=0` temporal filter and passthrough
+output timing as processing, with `wrapped_avframe` into FFmpeg's null muxer.
+Only machine progress records cross the pipe: no RGB conversion, raw-video
+encoding, frame transfer or frame cache is needed for the count. Require a valid
+final `progress=end` report and successful child exit; preserve backend errors
+and cancellation ahead of secondary parser errors. Processing still verifies the
+normalized count at EOF.
+
+The supplied CLI tools do not expose a random-access frame-index existence query
+for this normalized stream. FFprobe `-read_intervals` seeks by time, with inexact
+seek positions; `select`'s `n` is sequential, and repeating it would repeat decoding.
+Metadata can also describe a different count from the normalized timeline, as
+the VFR regression demonstrates. Keep the sequential fallback until an exact
+index query is available. Plain FFprobe `-count_frames` counts decoded source
+frames and does not apply the application's FPS filter. See the official
+[FFprobe options](https://ffmpeg.org/ffprobe.html#Main-options) and
+[select filter](https://ffmpeg.org/ffmpeg-filters.html#select_002c-aselect).
 
 `encoder_options.rs` parses each repeatable `-e`/`--extra-encoder-option` value using `shlex` POSIX quoting, normalizing `-key=value` into separate FFmpeg arguments without a shell. Keep repetition order and append the resulting output options after all inputs/default options in both encoder builders; preflight must receive the same arguments. The old `-c`/`--crf`, `--video-codec`, and `--audio-codec` interfaces are removed; codec overrides are resolved solely from extra encoder options. Retain finite CRF validation for source metadata, while explicit FFmpeg values are validated by the backend. Effective codec and rate-control selection must respect extra options so defaults and early audio-copy checks do not contradict overrides. The smoke suite verifies encoded CRF values, literal quoted metadata, audio overrides, image compression, early backend errors, and rejection of the removed flags. The runtime `shlex` dependency is covered by the generated license report.
 

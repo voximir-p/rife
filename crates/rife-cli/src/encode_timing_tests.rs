@@ -131,6 +131,88 @@ fn stdout_encodes_a_decodable_frame_before_more_input_or_eof() {
     }
 }
 
+#[test]
+#[ignore = "requires FFmpeg and FFprobe on PATH or RIFE_TEST_FFMPEG/RIFE_TEST_FFPROBE"]
+fn internal_count_matches_rgb_normalization_for_cfr_vfr_offsets_and_odd_dimensions() {
+    use crate::decode;
+    let directory = tempfile::tempdir().unwrap();
+    let ffmpeg = tool("ffmpeg");
+    let ffprobe = tool("ffprobe");
+    let cfr = directory.path().join("cfr.mp4");
+    run(Command::new(&ffmpeg)
+        .args([
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=16x16:rate=30000/1001",
+            "-frames:v",
+            "17",
+            "-c:v",
+            "libx264",
+            "-bf",
+            "3",
+            "-y",
+        ])
+        .arg(&cfr));
+    let vfr = directory.path().join("vfr.mp4");
+    run(Command::new(&ffmpeg)
+        .args([
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=16x16:rate=4",
+            "-frames:v",
+            "8",
+            "-vf",
+            "setpts=N*N/(4*TB)",
+            "-fps_mode",
+            "vfr",
+            "-c:v",
+            "libx264",
+            "-y",
+        ])
+        .arg(&vfr));
+    let offset = fixture(directory.path(), 5);
+    let odd = directory.path().join("odd.nut");
+    run(Command::new(&ffmpeg)
+        .args([
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=17x19:rate=7",
+            "-frames:v",
+            "9",
+            "-pix_fmt",
+            "gbrp10le",
+            "-c:v",
+            "ffv1",
+            "-y",
+        ])
+        .arg(&odd));
+    for input in [&cfr, &vfr, &offset, &odd] {
+        let cancel = CancellationToken::default();
+        let info = media::probe(&ffprobe, input, &cancel, false).unwrap();
+        let reference = run(&mut decode::command(&ffmpeg, input, info.rate));
+        let bytes_per_frame = rife_core::Frame::byte_len(info.width, info.height).unwrap();
+        assert!(reference.len().is_multiple_of(bytes_per_frame));
+        let expected = (reference.len() / bytes_per_frame) as u64;
+        let progress = run(&mut decode::counting_command(&ffmpeg, input, info.rate));
+        let actual = decode::read_count(&mut progress.as_slice(), &cancel, |_| {}).unwrap();
+        assert_eq!(actual, expected, "{}", input.display());
+        if input == &vfr {
+            // Source-frame metadata and an unfiltered -count_frames report
+            // cannot replace this app's normalized output count.
+            assert_ne!(actual, 8);
+        }
+    }
+}
+
 fn tool(name: &str) -> PathBuf {
     std::env::var_os(format!("RIFE_TEST_{}", name.to_ascii_uppercase()))
         .map(PathBuf::from)

@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Voximir.
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! CFR normalization shared by frame counting and processing.
+//! CFR normalization shared by exact counting and RGB processing.
 use crate::{
     config,
     media::{self, Rate},
@@ -9,48 +9,76 @@ use crate::{
     ui::Ui,
 };
 use anyhow::{Context, Result, ensure};
-use rife_core::{CancellationToken, Frame};
+use rife_core::CancellationToken;
 use std::{
-    io::Read,
+    io::{BufRead, BufReader},
     path::Path,
     process::{Command, Stdio},
 };
 
-pub(crate) fn command(ffmpeg: &Path, input: &Path, rate: Rate) -> Command {
+fn input_command(ffmpeg: &Path, input: &Path) -> Command {
     let mut command = Command::new(ffmpeg);
     command
         .args(["-hide_banner", "-loglevel", "warning", "-nostdin", "-i"])
         .arg(input)
-        .args([
-            "-map",
-            "0:v:0",
-            "-an",
-            "-sn",
-            "-dn",
-            "-vf",
-            &format!(
-                "fps=fps={rate}:start_time=0,format={}",
-                config::PIXEL_FORMAT
-            ),
-            "-fps_mode",
-            "passthrough",
-            "-c:v",
-            "rawvideo",
-            "-threads",
-            "1",
-            "-pix_fmt",
-            config::PIXEL_FORMAT,
-            "-f",
-            "rawvideo",
-            "pipe:1",
-        ])
+        .args(["-map", "0:v:0", "-an", "-sn", "-dn"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped());
     command
 }
 
-// Run the exact normalization filter once to establish N. This uses one
-// reusable byte buffer, never metadata estimates or a temporary image sequence.
+fn normalization_filter(rate: Rate) -> String {
+    format!("fps=fps={rate}:start_time=0")
+}
+
+pub(crate) fn command(ffmpeg: &Path, input: &Path, rate: Rate) -> Command {
+    let mut command = input_command(ffmpeg, input);
+    command.args([
+        "-vf",
+        &format!(
+            "{},format={}",
+            normalization_filter(rate),
+            config::PIXEL_FORMAT
+        ),
+        "-fps_mode",
+        "passthrough",
+        "-c:v",
+        "rawvideo",
+        "-threads",
+        "1",
+        "-pix_fmt",
+        config::PIXEL_FORMAT,
+        "-f",
+        "rawvideo",
+        "pipe:1",
+    ]);
+    command
+}
+
+pub(crate) fn counting_command(ffmpeg: &Path, input: &Path, rate: Rate) -> Command {
+    let mut command = input_command(ffmpeg, input);
+    command.args([
+        "-vf",
+        &normalization_filter(rate),
+        "-fps_mode",
+        "passthrough",
+        "-c:v",
+        "wrapped_avframe",
+        "-f",
+        "null",
+        "-nostats",
+        "-progress",
+        "pipe:1",
+        "-stats_period",
+        &config::PROGRESS_INTERVAL.as_secs_f64().to_string(),
+        "-",
+    ]);
+    command
+}
+
+// Metadata cannot establish the normalized count: timestamp seeking is not a
+// frame-index existence query. Keep the exact sequential pass, but let FFmpeg
+// count filtered frames internally instead of converting/transferring RGB data.
 pub(crate) fn count_frames(
     ffmpeg: &Path,
     input: &Path,
@@ -60,16 +88,13 @@ pub(crate) fn count_frames(
 ) -> Result<u64> {
     let mut counting = ui.counting();
     let mut child = ManagedChild::spawn(
-        command(ffmpeg, input, info.rate),
+        counting_command(ffmpeg, input, info.rate),
         "FFmpeg counting",
         cancel.clone(),
     )?;
-    let mut pipe = child.take_stdout();
-    let bytes_per_frame = Frame::byte_len(info.width, info.height)? as u64;
-    let result = count_rgb_frames(&mut pipe, bytes_per_frame, cancel, |frames| {
+    let result = read_count(&mut BufReader::new(child.take_stdout()), cancel, |frames| {
         counting.advance(frames)
     });
-    drop(pipe);
     let finish = child.finish();
     cancel.check()?;
     match result {
@@ -82,32 +107,97 @@ pub(crate) fn count_frames(
     }
 }
 
-fn count_rgb_frames(
-    reader: &mut impl Read,
-    bytes_per_frame: u64,
+pub(crate) fn read_count(
+    reader: &mut impl BufRead,
     cancel: &CancellationToken,
     mut progress: impl FnMut(u64),
 ) -> Result<u64> {
-    let mut bytes = 0u64;
-    let mut buffer = [0u8; 64 * 1024];
+    let mut frames = 0;
+    let mut complete = false;
+    let mut line = String::new();
     loop {
         cancel.check()?;
-        let n = reader
-            .read(&mut buffer)
-            .context("could not count normalized video")?;
-        if n == 0 {
-            break;
+        line.clear();
+        match reader.read_line(&mut line) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            result => {
+                if result.context("could not read normalized frame count")? == 0 {
+                    break;
+                }
+            }
         }
-        bytes = bytes
-            .checked_add(n as u64)
-            .context("normalized video is too large")?;
-        progress(bytes / bytes_per_frame);
+        if let Some(value) = line.strip_prefix("frame=") {
+            let count = value
+                .trim()
+                .parse()
+                .context("FFmpeg returned an invalid frame count")?;
+            ensure!(count >= frames, "FFmpeg returned a decreasing frame count");
+            frames = count;
+            progress(frames);
+        } else if line.trim_end() == "progress=end" {
+            complete = true;
+        }
     }
     ensure!(
-        bytes.is_multiple_of(bytes_per_frame),
-        "FFmpeg counting returned a truncated RGB frame"
+        complete,
+        "FFmpeg counting did not finish its progress report"
     );
-    let count = bytes / bytes_per_frame;
-    ensure!(count > 0, "input contains no video frames");
-    Ok(count)
+    ensure!(frames > 0, "input contains no video frames");
+    Ok(frames)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+
+    #[test]
+    fn counting_requires_a_complete_valid_report_and_remains_cancellable() {
+        let cancel = CancellationToken::default();
+        let mut observed = Vec::new();
+        let count = read_count(
+            &mut &b"frame= 1\nfps=0\nprogress=continue\nframe=7\nprogress=end\n"[..],
+            &cancel,
+            |count| observed.push(count),
+        )
+        .unwrap();
+        assert_eq!(count, 7);
+        assert_eq!(observed, [1, 7]);
+        for input in [
+            "frame=7\n",
+            "frame=0\nprogress=end\n",
+            "frame=bad\nprogress=end\n",
+            "frame=-1\nprogress=end\n",
+            "frame=7\nframe=6\nprogress=end\n",
+        ] {
+            assert!(
+                read_count(&mut input.as_bytes(), &cancel, |_| {}).is_err(),
+                "{input:?}"
+            );
+        }
+        assert!(
+            read_count(&mut &b"frame=1\nprogress=end\n"[..], &cancel, |_| cancel
+                .cancel())
+            .unwrap_err()
+            .to_string()
+            .contains("cancelled")
+        );
+    }
+
+    #[test]
+    fn counting_preserves_reader_errors() {
+        struct Failed;
+        impl Read for Failed {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("test read failed"))
+            }
+        }
+        let error = read_count(
+            &mut BufReader::new(Failed),
+            &CancellationToken::default(),
+            |_| {},
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("test read failed"));
+    }
 }

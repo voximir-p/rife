@@ -556,7 +556,7 @@ fn timestamp(duration: Duration) -> String {
         format!("{:02}:{:02}", seconds / 60, seconds % 60)
     } else {
         format!(
-            "{}:{:02}:{:02}",
+            "{:02}:{:02}:{:02}",
             seconds / 3600,
             seconds / 60 % 60,
             seconds % 60
@@ -595,30 +595,33 @@ fn render_status(
     } else {
         PROGRESS_LABEL
     }));
-    let mut percent = String::new();
-    let mut eta = String::new();
-    if let Some(total) = total {
-        percent = format!(" ({:.1}%)", frames as f64 / total as f64 * 100.0);
-        let remaining = if frames == total {
-            Some(Duration::ZERO)
-        } else if frames > 0 && !elapsed.is_zero() {
-            Duration::try_from_secs_f64(
-                elapsed.as_secs_f64() * total.saturating_sub(frames) as f64 / frames as f64,
-            )
-            .ok()
+    let percent = total
+        .map(|total| format!(" ({:.1}%)", frames as f64 / total as f64 * 100.0))
+        .unwrap_or_default();
+    let estimated = total
+        .filter(|_| frames > 0 && !elapsed.is_zero())
+        .and_then(|total| {
+            Duration::try_from_secs_f64(elapsed.as_secs_f64() * total as f64 / frames as f64).ok()
+        });
+    let clock = format!(
+        "{time}/{}",
+        estimated.map(timestamp).unwrap_or_else(|| "--:--".into())
+    );
+    let fps = if matches!(stage, Stage::Processing) {
+        let rate = if elapsed.is_zero() {
+            0.0
         } else {
-            None
+            frames as f64 / elapsed.as_secs_f64()
         };
-        eta = format!(
-            "{separator}ETA {}",
-            remaining.map(timestamp).unwrap_or_else(|| "--:--".into())
-        );
-    }
+        format!("{separator}{rate:.2} fps")
+    } else {
+        String::new()
+    };
     let suffixes = [
-        format!("{count} frames{percent}: elapsed {time}{eta}"),
-        format!("{count} frames{percent}: {time}{eta}"),
-        format!("{count}{percent}: {time}{eta}"),
-        format!("{count}{percent}{eta}"),
+        format!("{count} frames{percent}{separator}{clock}{fps}"),
+        format!("{count}{percent}{separator}{clock}{fps}"),
+        format!("{count}{percent}{separator}{clock}"),
+        format!("{count}{percent}"),
     ];
     if let Some(total) = total {
         for suffix in &suffixes {
@@ -805,7 +808,7 @@ mod tests {
         assert_eq!(
             line,
             format!(
-                "{} [>                               ] 3/272 frames (1.1%): elapsed 00:12 | ETA 17:56",
+                "{} [>                               ] 3/272 frames (1.1%) | 00:12/18:08",
                 padded("Saving")
             )
         );
@@ -1117,14 +1120,59 @@ mod tests {
     }
 
     #[test]
-    fn reports_actual_count_estimated_total_and_elapsed_time() {
+    fn reports_output_fps_and_elapsed_over_estimated_total_time() {
         let line = status(300, Some(600), 120, false);
         assert!(
             line.starts_with(&format!("{} [", padded(PROGRESS_LABEL)))
-                && line.contains("] 300/600 frames (50.0%): elapsed"),
+                && line.contains("] 300/600 frames (50.0%) |"),
             "{line}"
         );
-        assert!(line.contains("elapsed 00:10 | ETA 00:10"), "{line}");
+        assert!(line.contains("00:10/00:20 | 30.00 fps"), "{line}");
+        let fractional = render_status(
+            2312,
+            Some(4624),
+            Duration::from_secs(100),
+            120,
+            Palette { enabled: false },
+            Stage::Processing,
+        );
+        assert!(
+            fractional.ends_with("01:40/03:20 | 23.12 fps"),
+            "{fractional}"
+        );
+    }
+
+    #[test]
+    fn live_clocks_add_zero_padded_hours_independently_at_one_hour() {
+        for (milliseconds, clocks) in [
+            (1_799_999, "29:59/59:59"),
+            (1_800_000, "30:00/01:00:00"),
+            (3_599_999, "59:59/01:59:59"),
+            (3_600_000, "01:00:00/02:00:00"),
+        ] {
+            for stage in [Stage::Processing, Stage::Saving] {
+                let line = render_status(
+                    1,
+                    Some(2),
+                    Duration::from_millis(milliseconds),
+                    160,
+                    Palette { enabled: false },
+                    stage,
+                );
+                assert!(line.contains(clocks), "{line}");
+                assert!(!line.contains("elapsed") && !line.contains("ETA"), "{line}");
+            }
+        }
+        assert_eq!(timestamp(Duration::from_secs(360_000)), "100:00:00");
+        let overflow = render_status(
+            1,
+            Some(u64::MAX),
+            Duration::from_secs(u64::MAX),
+            200,
+            Palette { enabled: false },
+            Stage::Processing,
+        );
+        assert!(overflow.contains("/--:--"), "{overflow}");
     }
 
     #[test]
@@ -1143,7 +1191,7 @@ mod tests {
             Stage::Processing,
         );
         assert!(
-            line.contains("80/424 frames (18.9%): elapsed 00:02 | ETA 00:08"),
+            line.contains("80/424 frames (18.9%) | 00:02/00:10 | 40.00 fps"),
             "{line}"
         );
         let colored = status(300, Some(600), 120, true);
@@ -1155,11 +1203,11 @@ mod tests {
     }
 
     #[test]
-    fn unknown_and_exceeded_totals_do_not_invent_percentages_or_eta() {
+    fn unknown_and_exceeded_totals_keep_output_fps_without_inventing_completion_time() {
         for total in [None, Some(0), Some(200), Some(300)] {
             let line = status(300, total, 120, false);
             assert!(line.contains("300 frames"));
-            assert!(!line.contains("ETA") || line.contains("--:--"), "{line}");
+            assert!(line.contains("00:10/--:-- | 30.00 fps"), "{line}");
             assert!(!line.contains('%') && !line.contains('~'), "{line}");
         }
         let starting = render_status(
@@ -1170,7 +1218,7 @@ mod tests {
             Palette { enabled: false },
             Stage::Processing,
         );
-        assert!(starting.contains("ETA --:--") && !starting.contains("0.00x"));
+        assert!(starting.contains("00:00/--:-- | 0.00 fps"), "{starting}");
         let completed = render_status(
             544,
             Some(544),
@@ -1181,7 +1229,10 @@ mod tests {
         );
         assert_eq!(
             completed,
-            format!("{} 544 frames: elapsed 00:31", padded(PROGRESS_LABEL))
+            format!(
+                "{} 544 frames | 00:31/--:-- | 17.55 fps",
+                padded(PROGRESS_LABEL)
+            )
         );
     }
 
@@ -1234,10 +1285,22 @@ mod tests {
                     assert!(line.contains("1250/2000"), "{line:?}");
                     assert!(!line.contains('x'), "{line:?}");
                 }
+                let long = render_status(
+                    1,
+                    Some(2),
+                    Duration::from_secs(3600),
+                    width,
+                    Palette { enabled: color },
+                    Stage::Processing,
+                );
+                assert!(
+                    measure_text_width(&long) <= width,
+                    "width {width}: {long:?}"
+                );
             }
         }
         assert!(status(300, Some(600), 120, true).contains("\x1b["));
         assert!(!status(300, Some(600), 120, false).contains("\x1b["));
-        assert_eq!(timestamp(Duration::from_secs(3661)), "1:01:01");
+        assert_eq!(timestamp(Duration::from_secs(3661)), "01:01:01");
     }
 }
