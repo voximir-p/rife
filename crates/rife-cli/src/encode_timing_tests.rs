@@ -4,7 +4,7 @@
 //! Opt-in muxing regressions; these exercise the real encoder command without
 //! requiring a model or an inference device.
 
-use crate::{Args, chapters, encode, media};
+use crate::{chapters, cli::Args, encode, media};
 use clap::Parser;
 use rife_core::CancellationToken;
 use serde_json::Value;
@@ -173,12 +173,12 @@ fn encode_fixture(
         input,
         encode::Timing {
             rate,
-            video_quality: encode::VideoQuality::FormatDefault,
+            video_quality: &encode::VideoQuality::FormatDefault,
             speed,
             duration: frames as f64 * rate.den as f64 / rate.num as f64,
             preserve_source_timing,
-            source_audio_bitrates: info.audio_bitrates,
-            chapter_metadata,
+            source_audio_bitrates: &info.audio_bitrates,
+            chapter_metadata: chapter_metadata.as_deref(),
         },
         extension,
         &args,

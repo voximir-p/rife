@@ -1,16 +1,16 @@
 // Copyright (C) 2026 Voximir.
 // SPDX-License-Identifier: GPL-3.0-only
 
+mod loading;
+
 use crate::{
-    CancellationToken, Frame, Model, Result,
+    CancellationToken, Frame, Result,
     settings::{DEVICE_NAME_CAPACITY, NATIVE_ERROR_CAPACITY},
 };
 use anyhow::{Context, bail, ensure};
 use std::{
     collections::BTreeMap,
-    ffi::{CStr, CString, c_char, c_void},
-    fs,
-    io::Read,
+    ffi::{CStr, c_char, c_void},
     path::Path,
     ptr::NonNull,
     str::FromStr,
@@ -83,24 +83,6 @@ unsafe extern "C" fn cancellation_requested(context: *const c_void) -> i32 {
     // native call. The C++ scope keeps the pointer thread-local and never stores
     // it in the model. Reading the token is atomic and cannot panic.
     i32::from(unsafe { &*context.cast::<CancellationToken>() }.is_cancelled())
-}
-
-fn read_model_file(path: &Path, cancel: &CancellationToken) -> Result<Vec<u8>> {
-    cancel.check()?;
-    let mut file = fs::File::open(path)?;
-    let mut data = Vec::new();
-    data.try_reserve_exact(
-        usize::try_from(file.metadata()?.len()).context("model file is too large")?,
-    )?;
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        cancel.check()?;
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            return Ok(data);
-        }
-        data.extend_from_slice(&buffer[..read]);
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -422,15 +404,7 @@ impl Engine {
         options: EngineOptions,
         cancel: &CancellationToken,
     ) -> Result<Self> {
-        cancel.check()?;
-        let directory = model_directory.as_ref();
-        let param = read_model_file(&directory.join(Model::PARAM_FILE), cancel)
-            .context("could not read NCNN model parameters")?;
-        let metadata = crate::model::validate(&param)?;
-        let param = CString::new(param).context("NCNN parameter file contains a null byte")?;
-        let weights = read_model_file(&directory.join(Model::WEIGHTS_FILE), cancel)
-            .context("could not read NCNN model weights")?;
-        ensure!(!weights.is_empty(), "empty NCNN model weights");
+        let model = loading::ModelData::read(model_directory.as_ref(), cancel)?;
         let cpu_only =
             matches!(&options.devices, DeviceSelection::Ids(ids) if ids.iter().all(|&id| id == -1));
         let available = if cpu_only {
@@ -461,45 +435,8 @@ impl Engine {
                     .cloned()
                     .with_context(|| format!("invalid GPU ID {id}"))?
             };
-            let gate = gpu_gate(id)?;
-            let loading_permit = gate
-                .as_ref()
-                .map(|gate| cancellable_lock(gate, cancel))
-                .transpose()?;
-            let mut handle = std::ptr::null_mut();
-            // SAFETY: buffers are valid for the call. The native loader copies
-            // weights using a bounded reader, and never retains Rust pointers.
-            let status = unsafe {
-                rife_create(
-                    param.as_ptr(),
-                    weights.as_ptr(),
-                    weights.len(),
-                    id,
-                    metadata.padding as i32,
-                    if id == -1 {
-                        jobs.process[index] as i32
-                    } else {
-                        1
-                    },
-                    &mut handle,
-                    cancellation_requested,
-                    std::ptr::from_ref(cancel).cast(),
-                )
-            };
-            drop(loading_permit);
-            if status != 0 {
-                cancel.check()?;
-                bail!(
-                    "could not load RIFE on {} (code {status}): {}",
-                    device.name,
-                    native_diagnostic()
-                );
-            }
-            let network = Arc::new(Network {
-                handle: NonNull::new(handle).context("NCNN returned a null context")?,
-                device: device.clone(),
-                gpu_gate: gate,
-            });
+            let threads = if id == -1 { jobs.process[index] } else { 1 };
+            let network = Network::load(&model, device.clone(), threads, cancel)?;
             cancel.check()?;
             // Rust workers supply CPU parallelism too; no OpenMP DLL is needed.
             let count = jobs.process[index];
@@ -535,6 +472,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::CString;
     #[test]
     fn displayed_jobs_and_device_selections_round_trip() {
         for value in ["auto", "-1", "-1,0,1", "1,0"] {

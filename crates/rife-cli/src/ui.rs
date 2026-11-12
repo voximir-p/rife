@@ -15,7 +15,7 @@ use std::{
 };
 
 const LABEL_WIDTH: usize = 12;
-const REFRESH_INTERVAL: Duration = Duration::from_millis(150);
+const REFRESH_INTERVAL: Duration = crate::config::PROGRESS_INTERVAL;
 const PROGRESS_LABEL: &str = "Processing";
 const MAX_BAR_WIDTH: usize = 32;
 const MIN_BAR_WIDTH: usize = 8;
@@ -189,7 +189,7 @@ pub(crate) fn error(message: impl fmt::Display) {
 
 pub(crate) fn report_error(failure: &anyhow::Error) {
     if let Some(backend) = failure.downcast_ref::<crate::worker::Failure>() {
-        let fallback = crate::worker::BackendReport {
+        let fallback = crate::diagnostics::Report {
             reason: backend.to_string(),
             details: Vec::new(),
         };
@@ -204,7 +204,7 @@ pub(crate) fn report_error(failure: &anyhow::Error) {
     }
 }
 
-fn report_backend_error(report: &crate::worker::BackendReport, summary: &str) {
+fn report_backend_error(report: &crate::diagnostics::Report, summary: &str) {
     let term = Term::stderr();
     for line in backend_error_lines(report, summary, Palette::stderr()) {
         write_line(&term, &line);
@@ -212,7 +212,7 @@ fn report_backend_error(report: &crate::worker::BackendReport, summary: &str) {
 }
 
 fn backend_error_lines(
-    report: &crate::worker::BackendReport,
+    report: &crate::diagnostics::Report,
     summary: impl fmt::Display,
     palette: Palette,
 ) -> Vec<String> {
@@ -965,7 +965,7 @@ mod tests {
                 ))),
             );
             let palette = Palette { enabled: true };
-            let detail = format!("model `{}`", crate::Model::default());
+            let detail = format!("model `{}`", rife_core::Model::default());
             let line = format!("{} {detail}", palette.value(padded("Loading")));
             let loaded_line = format!("{} {detail}", palette.label("Loaded"));
             assert!(line.contains("\x1b[96m"));
@@ -1083,7 +1083,7 @@ mod tests {
             "[0 Example Vulkan GPU] subgroup=32 basic=1 vote=1 ballot=1 shuffle=1".into(),
             "vkAllocateMemory failed -2".into(),
         ];
-        let report = crate::worker::BackendReport {
+        let report = crate::diagnostics::Report {
             reason: "segmentation fault (SIGSEGV)".into(),
             details,
         };

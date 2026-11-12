@@ -17,5 +17,6 @@ pub(crate) const FFMPEG_DIRECTORY: &str = "ffmpeg";
 pub(crate) const MODELS_DIRECTORY: &str = "models";
 pub(crate) const PIXEL_FORMAT: &str = "rgb24";
 pub(crate) const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(50);
+pub(crate) const PROGRESS_INTERVAL: Duration = Duration::from_millis(150);
 pub(crate) const DIAGNOSTIC_LINES: usize = 20;
 pub(crate) const DIAGNOSTIC_LINE_CHARS: usize = 1000;

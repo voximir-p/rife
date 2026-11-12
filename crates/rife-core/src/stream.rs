@@ -233,6 +233,83 @@ impl Engine {
     }
 }
 
+fn process_task<F>(
+    task: Task,
+    worker: usize,
+    cancel: &CancellationToken,
+    process: &F,
+) -> Result<Event>
+where
+    F: Fn(usize, &Frame, &Frame, &mut Frame, f32) -> Result<()>,
+{
+    cancel.check()?;
+    let mut buffer = task.buffer;
+    let middle = if task.cut {
+        None
+    } else {
+        let mut frame = Frame::recycled(
+            task.first.width(),
+            task.first.height(),
+            std::mem::take(&mut buffer),
+        )?;
+        process(worker, &task.first, &task.second, &mut frame, task.timestep).with_context(
+            || {
+                format!(
+                    "input frame pair {} -> {}",
+                    task.pair_index,
+                    task.pair_index + 1
+                )
+            },
+        )?;
+        Some(frame)
+    };
+    Ok(Event::Pair(Pair {
+        index: task.index,
+        first: task.first,
+        middle,
+        buffer,
+    }))
+}
+
+fn collect_output<W, P>(
+    event_rx: &Receiver<Result<Event>>,
+    buffer_tx: &SyncSender<Vec<u8>>,
+    cancel: &CancellationToken,
+    mut emit: W,
+    mut progress: P,
+) -> Result<StreamStats>
+where
+    W: FnMut(&Frame) -> Result<()>,
+    P: FnMut(u64),
+{
+    let mut pending = BTreeMap::new();
+    let mut next = 0u64;
+    let mut finished = None;
+    loop {
+        match receive(event_rx, cancel)?? {
+            Event::Pair(pair) => {
+                pending.insert(pair.index, pair);
+            }
+            Event::End(stats) => finished = Some(stats),
+        }
+        while let Some(pair) = pending.remove(&next) {
+            cancel.check()?;
+            emit(pair.middle.as_ref().unwrap_or(&pair.first))?;
+            next += 1;
+            progress(next);
+            let buffer = pair.middle.map(Frame::into_pixels).unwrap_or(pair.buffer);
+            // After the final task the producer may have dropped its
+            // buffer receiver; no further permits are needed then.
+            let _ = buffer_tx.send(buffer);
+        }
+        if let Some(stats) = finished
+            && next == stats.output_frames
+        {
+            return Ok(stats);
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_stream<I, W, P, F>(
     worker_count: usize,
@@ -240,8 +317,8 @@ fn run_stream<I, W, P, F>(
     frames: I,
     options: StreamOptions,
     cancel: &CancellationToken,
-    mut emit: W,
-    mut progress: P,
+    emit: W,
+    progress: P,
     process: F,
 ) -> Result<StreamStats>
 where
@@ -288,34 +365,7 @@ where
                             Err(RecvTimeoutError::Disconnected) => break,
                         }
                     };
-                    let result = (|| -> Result<Event> {
-                        cancel.check()?;
-                        let mut buffer = task.buffer;
-                        let middle = if task.cut {
-                            None
-                        } else {
-                            let mut frame = Frame::recycled(
-                                task.first.width(),
-                                task.first.height(),
-                                std::mem::take(&mut buffer),
-                            )?;
-                            process(worker, &task.first, &task.second, &mut frame, task.timestep)
-                                .with_context(|| {
-                                format!(
-                                    "input frame pair {} -> {}",
-                                    task.pair_index,
-                                    task.pair_index + 1
-                                )
-                            })?;
-                            Some(frame)
-                        };
-                        Ok(Event::Pair(Pair {
-                            index: task.index,
-                            first: task.first,
-                            middle,
-                            buffer,
-                        }))
-                    })();
+                    let result = process_task(task, worker, cancel, process);
                     let failed = result.is_err();
                     if events.send(result).is_err() || failed {
                         break;
@@ -336,36 +386,7 @@ where
             .map(Event::End);
             let _ = event_tx.send(result);
         });
-        let result = (|| -> Result<StreamStats> {
-            let mut pending = BTreeMap::new();
-            let mut next = 0u64;
-            let mut completed = 0u64;
-            let mut finished = None;
-            loop {
-                match receive(&event_rx, cancel)?? {
-                    Event::Pair(pair) => {
-                        pending.insert(pair.index, pair);
-                    }
-                    Event::End(stats) => finished = Some(stats),
-                }
-                while let Some(pair) = pending.remove(&next) {
-                    cancel.check()?;
-                    emit(pair.middle.as_ref().unwrap_or(&pair.first))?;
-                    completed += 1;
-                    progress(completed);
-                    let buffer = pair.middle.map(Frame::into_pixels).unwrap_or(pair.buffer);
-                    // After the final task the producer may have dropped its
-                    // buffer receiver; no further permits are needed then.
-                    let _ = buffer_tx.send(buffer);
-                    next += 1;
-                }
-                if let Some(stats) = finished
-                    && next == stats.output_frames
-                {
-                    return Ok(stats);
-                }
-            }
-        })();
+        let result = collect_output(&event_rx, &buffer_tx, cancel, emit, progress);
         if result.is_err() {
             cancel.cancel();
         }

@@ -1,9 +1,9 @@
 // Copyright (C) 2026 Voximir.
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::{Args, Model, config, images::Sequence};
+use crate::{cli::Args, config, images::Sequence};
 use anyhow::{Context, Result, bail, ensure};
-use rife_core::CancellationToken;
+use rife_core::{CancellationToken, Model};
 use std::{
     env,
     ffi::OsStr,

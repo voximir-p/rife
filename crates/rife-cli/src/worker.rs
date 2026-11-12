@@ -1,26 +1,33 @@
 // Copyright (C) 2026 Voximir.
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! Isolate native inference from the CLI that owns output and process cleanup.
-use crate::{Args, config};
-use anyhow::{Context, Result, ensure};
-use rife_core::{CancellationToken, Engine, Frame, FrameSchedule, PlaybackOptions, StreamOptions};
-use serde::{Deserialize, Serialize};
+//! Supervise the isolated native backend without owning any native handles.
+mod protocol;
+mod raw_frames;
+mod runtime;
+use crate::{config, diagnostics::Report as BackendReport};
+use anyhow::{Context, Result};
+pub(crate) use protocol::Config;
+use protocol::Event;
+use rife_core::CancellationToken;
+pub(crate) use runtime::entry;
 use std::{
     collections::VecDeque,
-    env,
-    ffi::OsStr,
-    fmt, fs,
-    io::{self, BufRead, BufReader, BufWriter, Read, Write},
+    env, fmt, fs,
+    io::{self, BufRead, BufReader},
     path::{Path, PathBuf},
     process::{Child, ChildStdout, Command, ExitStatus, Stdio},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, RecvTimeoutError},
-    },
+    sync::mpsc::{self, Receiver, RecvTimeoutError},
     thread::{self, JoinHandle},
     time::{Duration, Instant},
+};
+#[cfg(test)]
+use {
+    crate::cli::Args,
+    protocol::send_event,
+    raw_frames::RawFrames,
+    rife_core::{FrameSchedule, PlaybackOptions},
+    runtime::configure_fault_reporting,
 };
 
 const WORKER_FLAG: &str = "--__rife-native-worker";
@@ -28,79 +35,6 @@ const EVENT_PREFIX: &str = "RIFE_WORKER ";
 const CANCEL_FILE: &str = "native.cancel";
 const CANCEL_GRACE: Duration = Duration::from_secs(5);
 const PROCESSING_FAILURE: &str = "native backend failed";
-
-#[derive(Serialize, Deserialize)]
-pub(crate) struct Config {
-    width: u32,
-    height: u32,
-    input_frames: u64,
-    fps_scale: String,
-    speed: String,
-    threshold: String,
-    devices: String,
-    jobs: String,
-}
-
-impl Config {
-    pub(crate) fn new(args: &Args, dimensions: (u32, u32), input_frames: u64) -> Self {
-        let options = args.engine_options();
-        Self {
-            width: dimensions.0,
-            height: dimensions.1,
-            input_frames,
-            fps_scale: args.fps_scale.to_string(),
-            speed: args.speed.to_string(),
-            threshold: args.threshold.to_string(),
-            devices: options.devices.to_string(),
-            jobs: options.jobs.unwrap_or_default().to_string(),
-        }
-    }
-
-    fn schedule(&self) -> Result<FrameSchedule> {
-        FrameSchedule::for_playback(
-            self.input_frames,
-            PlaybackOptions {
-                fps_scale: self.fps_scale.parse()?,
-                speed: self.speed.parse()?,
-            },
-        )
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "event", rename_all = "snake_case")]
-enum Event {
-    Loaded {
-        devices: Vec<String>,
-    },
-    Progress {
-        frames: u64,
-    },
-    Finished {
-        frames: u64,
-    },
-    Error {
-        message: String,
-        native: bool,
-        #[serde(default)]
-        details: Vec<String>,
-    },
-}
-
-fn send_event(event: &Event) -> Result<()> {
-    let mut line = EVENT_PREFIX.as_bytes().to_vec();
-    serde_json::to_writer(&mut line, event)?;
-    line.push(b'\n');
-    io::stderr()
-        .write_all(&line)
-        .context("could not report native worker status")
-}
-
-#[derive(Debug)]
-pub(crate) struct BackendReport {
-    pub reason: String,
-    pub details: Vec<String>,
-}
 
 #[derive(Debug)]
 pub(crate) struct Failure {
@@ -453,221 +387,6 @@ fn exit_description(status: ExitStatus) -> String {
         return format!("{description} (0x{code:08x})");
     }
     format!("backend exited with code {}", status.code().unwrap_or(-1))
-}
-
-struct CancelMonitor {
-    stop: Arc<AtomicBool>,
-    thread: Option<JoinHandle<()>>,
-}
-impl CancelMonitor {
-    fn start(path: PathBuf, cancel: CancellationToken) -> Self {
-        let stop = Arc::new(AtomicBool::new(false));
-        let done = stop.clone();
-        let thread = thread::spawn(move || {
-            while !done.load(Ordering::Relaxed) {
-                if path.exists() {
-                    cancel.cancel();
-                    break;
-                }
-                thread::park_timeout(config::PROCESS_POLL_INTERVAL);
-            }
-        });
-        Self {
-            stop,
-            thread: Some(thread),
-        }
-    }
-}
-impl Drop for CancelMonitor {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(thread) = self.thread.take() {
-            thread.thread().unpark();
-            let _ = thread.join();
-        }
-    }
-}
-
-/// Private self-exec mode; model paths remain OS strings, not JSON strings.
-pub(crate) fn entry() -> Option<i32> {
-    let mut args = env::args_os().skip(1);
-    if args.next().as_deref() != Some(OsStr::new(WORKER_FLAG)) {
-        return None;
-    }
-    configure_fault_reporting();
-    let result = (|| {
-        let path = args.next().context("missing worker configuration")?;
-        let model = args.next().context("missing worker model directory")?;
-        ensure!(args.next().is_none(), "unexpected native worker argument");
-        run(Path::new(&path), Path::new(&model))
-    })();
-    Some(match result {
-        Ok(()) => 0,
-        Err(error) => {
-            let (message, native, details) =
-                if let Some(inference) = error.downcast_ref::<rife_core::InferenceError>() {
-                    (
-                        format!("interpolation failed (code {})", inference.status),
-                        true,
-                        inference.diagnostic.lines().map(str::to_owned).collect(),
-                    )
-                } else {
-                    (format!("{error:#}"), false, Vec::new())
-                };
-            let _ = send_event(&Event::Error {
-                message,
-                native,
-                details,
-            });
-            1
-        }
-    })
-}
-
-fn run(path: &Path, model: &Path) -> Result<()> {
-    let config: Config = serde_json::from_slice(&fs::read(path)?)?;
-    let cancel = CancellationToken::default();
-    let signal = cancel.clone();
-    ctrlc::set_handler(move || signal.cancel())
-        .context("could not register native worker cancellation")?;
-    let _monitor = CancelMonitor::start(
-        path.parent()
-            .context("missing worker staging directory")?
-            .join(CANCEL_FILE),
-        cancel.clone(),
-    );
-    let stats = {
-        let engine = Engine::new_with_cancellation(
-            model,
-            rife_core::EngineOptions {
-                devices: config.devices.parse()?,
-                jobs: Some(config.jobs.parse()?),
-            },
-            &cancel,
-        )?;
-        cancel.check()?;
-        send_event(&Event::Loaded {
-            devices: engine
-                .selected_devices()
-                .iter()
-                .map(|device| device.name.clone())
-                .collect(),
-        })?;
-        let input = io::stdin();
-        let frames = RawFrames::new(input, config.width, config.height)?;
-        let mut output = BufWriter::with_capacity(64 * 1024, io::stdout().lock());
-        let mut report_error = None;
-        let result = engine.interpolate_stream(
-            frames,
-            StreamOptions {
-                threshold: config.threshold.parse()?,
-                schedule: Some(config.schedule()?),
-                ..StreamOptions::default()
-            },
-            &cancel,
-            |frame| {
-                output
-                    .write_all(frame.pixels())
-                    .context("could not stream native output to FFmpeg")
-            },
-            |frames| {
-                if report_error.is_none()
-                    && let Err(error) = send_event(&Event::Progress { frames })
-                {
-                    report_error = Some(error);
-                    cancel.cancel();
-                }
-            },
-        );
-        if let Some(error) = report_error {
-            return Err(error);
-        }
-        let stats = result?;
-        output
-            .flush()
-            .context("could not flush native output to FFmpeg")?;
-        stats
-    }; // Drop every native model before reporting success to the owner.
-    cancel.check()?;
-    send_event(&Event::Finished {
-        frames: stats.output_frames,
-    })
-}
-
-fn configure_fault_reporting() {
-    #[cfg(unix)]
-    {
-        let limit = libc::rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-        // SAFETY: valid resource identifier and initialized limit. Only this
-        // disposable worker loses core dumps; the supervising CLI is untouched.
-        unsafe {
-            libc::setrlimit(libc::RLIMIT_CORE, &limit);
-        }
-    }
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::System::{
-            Diagnostics::Debug::{SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SetErrorMode},
-            ErrorReporting::{WER_FAULT_REPORTING_NO_UI, WerSetFlags},
-        };
-        // SAFETY: process-local error-reporting flags, set before native work.
-        unsafe {
-            SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
-            WerSetFlags(WER_FAULT_REPORTING_NO_UI);
-        }
-    }
-}
-
-struct RawFrames<R> {
-    reader: R,
-    width: u32,
-    height: u32,
-    bytes: usize,
-    finished: bool,
-}
-impl<R: Read> RawFrames<R> {
-    fn new(reader: R, width: u32, height: u32) -> Result<Self> {
-        Ok(Self {
-            reader,
-            width,
-            height,
-            bytes: Frame::byte_len(width, height)?,
-            finished: false,
-        })
-    }
-}
-impl<R: Read> Iterator for RawFrames<R> {
-    type Item = Result<Frame>;
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.finished {
-            return None;
-        }
-        let mut pixels = Vec::new();
-        if let Err(error) = pixels.try_reserve_exact(self.bytes) {
-            self.finished = true;
-            return Some(Err(error).context("could not allocate decoded frame"));
-        }
-        pixels.resize(self.bytes, 0);
-        match self.reader.read_exact(&mut pixels[..1]) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
-                self.finished = true;
-                return None;
-            }
-            Err(error) => {
-                self.finished = true;
-                return Some(Err(error).context("could not read decoded frame"));
-            }
-        }
-        if let Err(error) = self.reader.read_exact(&mut pixels[1..]) {
-            self.finished = true;
-            return Some(Err(error).context("FFmpeg returned a truncated RGB frame"));
-        }
-        Some(Frame::new(self.width, self.height, pixels))
-    }
 }
 
 #[cfg(test)]

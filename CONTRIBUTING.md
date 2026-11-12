@@ -106,6 +106,33 @@ without their private environment settings.
 - `crates/rife-core/native` contains the C++/NCNN implementation and checked C ABI.
 - `third_party` holds pinned native dependency metadata and local fetched sources.
 
+The executable entry point only dispatches private worker mode or the CLI. Within
+`crates/rife-cli/src`, responsibilities are divided as follows:
+
+| Module | Responsibility |
+| --- | --- |
+| `cli.rs` | Argument parsing and effective encoder option selection |
+| `app.rs` | Signal handling, application lifetime, and exit presentation |
+| `pipeline.rs` and `pipeline/` | Job preparation, preflight, execution, and destination ownership |
+| `process.rs` | Media child supervision, diagnostic capture, and cancellation |
+| `decode.rs` | The normalization command shared by counting and processing |
+| `encode.rs` and `encode/` | Command construction, container presets, quality, and audio timing |
+| `worker.rs` and `worker/` | Native process supervision, private protocol, runtime, and RGB frame reading |
+| `diagnostics.rs` | Shared backend error presentation data |
+
+Keep staging alive until all children are reaped, and release the destination
+lock after staging cleanup. Prepared jobs own both resources; planned jobs add
+the exact frame schedule and encoder command after counting. Encoder timing
+borrows quality, bitrate, and metadata settings while building an owned command.
+Worker progress messages use the same refresh interval as the terminal, while
+loading, completion, and errors are reported immediately. Coalescing status must
+never limit frame I/O or weaken final count/exit validation.
+
+In the core, `engine/loading.rs` owns cancellable model reads and native network
+construction. Stream task processing and ordered output collection stay separate
+from scoped thread orchestration. Keep their generic callbacks, recycled frame
+buffers, permit bounds, and per-device gates when extending these stages.
+
 Rust owns the public API and processing pipeline. The CLI runs model loading and native interpolation in a supervised worker using the same executable. The parent owns FFmpeg processes, output locks, staging, final commit, and the terminal UI; fatal worker exits must pass through that parent's normal error and cleanup path. Raw frames flow through OS pipes, while structured worker status and a bounded diagnostic tail drive progress and backend error reports. Keep public `rife-core` inference independent of this CLI process protocol. The worker privately enables native diagnostic mirroring so messages survive a subsequent crash; embedding applications retain quiet thread-local diagnostics. C++ exception messages are recorded before returning through the C ABI, and model-destruction failures must prevent output commit.
 
 The C++ backend is statically linked. Native build configuration and source overlays are maintained in `crates/rife-core/build.rs` and `crates/rife-core/native/CMakeLists.txt`.
