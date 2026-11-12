@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Use FFmpeg and FFprobe from `PATH` instead of the adjacent `ffmpeg/` folder. Install both tools and add their directory to `PATH`.
 - Show processing output fps and elapsed/estimated total time, with zero-padded hours for long jobs.
 - Reduce frame-counting overhead while preserving exact normalized counts, including variable-frame-rate videos.
 - Remove `--video-codec` and `--audio-codec`; select encoders with `-e "-c:v ENCODER"` and `-e "-c:a ENCODER"` instead.

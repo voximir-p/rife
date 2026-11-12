@@ -36,11 +36,11 @@ pub(crate) fn make_styles() -> ClapStyles {
     name = APP_NAME,
     version = VERSION,
     about = env!("CARGO_PKG_DESCRIPTION"),
-    long_about = "Streaming video interpolation with embedded NCNN/Vulkan. Download FFmpeg and FFprobe into an adjacent ffmpeg/ directory, and compatible model files into an adjacent models/ directory.",
+    long_about = "Streaming video interpolation with embedded NCNN/Vulkan. Install FFmpeg and FFprobe on PATH, and place compatible model files in an adjacent models/ directory.",
     styles = make_styles()
 )]
 pub(crate) struct Args {
-    /// Input video file (any format supported by the supplied FFmpeg build)
+    /// Input video file (any format supported by the installed FFmpeg build)
     #[arg(short, long, value_name = "FILE")]
     pub(crate) input: PathBuf,
 

@@ -56,11 +56,11 @@ FFprobe. They do not require models or a GPU:
 cargo test -p rife-cli --release --locked encode_timing_tests -- --ignored
 ```
 
-These tests use `ffmpeg` and `ffprobe` from `PATH`. Set `RIFE_TEST_FFMPEG` and
-`RIFE_TEST_FFPROBE` to select explicit test binaries instead. This discovery is
-test-only; the application still uses its executable-relative runtime tools.
+The application and these tests launch `ffmpeg` and `ffprobe` through `PATH`.
+Set `RIFE_TEST_FFMPEG` and `RIFE_TEST_FFPROBE` to select explicit binaries for
+the opt-in tests only; these variables do not configure the application.
 
-The smoke script exercises the built CLI through the runtime directory layout. Put the executable, FFmpeg/FFprobe, and one compatible model under `runtime/` as shown in the README, then run:
+The smoke script exercises the built CLI through the runtime directory layout. Put the executable and one compatible model under `runtime/` as shown in the README, install FFmpeg and FFprobe on `PATH`, then run:
 
 ```sh
 # On Windows, copy target/release/rife.exe to runtime/rife.exe instead.

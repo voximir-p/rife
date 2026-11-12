@@ -16,7 +16,11 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use rife_core::{CancellationToken, DeviceSelection, FrameSchedule, PlaybackOptions};
-use std::{env, fs, path::PathBuf, process::Command};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 use tempfile::TempDir;
 
 pub(super) struct PreparedJob {
@@ -48,13 +52,13 @@ impl PreparedJob {
         let root = dunce::simplified(&exe)
             .parent()
             .context("executable has no parent directory")?;
-        let ffmpeg = paths::tool_path(root, "ffmpeg")?;
-        let ffprobe = paths::tool_path(root, "ffprobe")?;
+        let ffmpeg = PathBuf::from("ffmpeg");
+        let ffprobe = Path::new("ffprobe");
         let model = paths::find_model(root, &args.model)?;
         validate_options(&args, &destination)?;
         let staging = paths::staging_directory(destination.parent())?;
         let staged_output = destination.stage(staging.path())?;
-        let info = media::probe(&ffprobe, &input, cancel, !destination.is_sequence())?;
+        let info = media::probe(ffprobe, &input, cancel, !destination.is_sequence())?;
         let (numerator, denominator) = playback(&args).fps_ratio()?;
         let output_rate = info.rate.scaled(numerator, denominator)?;
         validate_audio(&args, &destination, &info)?;

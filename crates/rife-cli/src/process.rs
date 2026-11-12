@@ -164,9 +164,19 @@ impl ManagedChild {
     ) -> Result<Self> {
         cancel.check()?;
         command.stderr(Stdio::piped());
-        let mut child = command
-            .spawn()
-            .with_context(|| format!("could not launch {label}"))?;
+        let mut child = command.spawn().map_err(|error| {
+            let message = if error.kind() == std::io::ErrorKind::NotFound
+                && matches!(command.get_program().to_str(), Some("ffmpeg" | "ffprobe"))
+            {
+                format!(
+                    "{} was not found on PATH; install FFmpeg and make sure ffmpeg and ffprobe are available",
+                    command.get_program().to_string_lossy()
+                )
+            } else {
+                format!("could not launch {label}")
+            };
+            anyhow::Error::new(error).context(message)
+        })?;
         let stdout = child.stdout.take();
         let stderr = child.stderr.take().expect("configured stderr pipe");
         let diagnostics =
@@ -325,6 +335,32 @@ mod tests {
     use super::*;
     use anyhow::ensure;
     use std::{env, io::Write};
+
+    #[test]
+    fn media_tools_are_launched_using_the_child_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let tools = directory.path().join("PATH tools with spaces");
+        let cwd = directory.path().join("unrelated cwd");
+        std::fs::create_dir(&tools).unwrap();
+        std::fs::create_dir(&cwd).unwrap();
+        for name in ["ffmpeg", "ffprobe"] {
+            // A self-executing test fixture avoids installed FFmpeg, drivers,
+            // shell scripts, or mutation of the test runner's environment.
+            std::fs::copy(
+                env::current_exe().unwrap(),
+                tools.join(format!("{name}{}", env::consts::EXE_SUFFIX)),
+            )
+            .unwrap();
+            let mut command = Command::new(name);
+            command
+                .args(["--exact", "process::tests::stdout_reader_child"])
+                .env_remove("RIFE_TEST_STDOUT_CHILD")
+                .env("PATH", &tools)
+                .current_dir(&cwd);
+            let output = capture_output(command, &CancellationToken::default()).unwrap();
+            assert!(String::from_utf8_lossy(&output).contains("stdout_reader_child ... ok"));
+        }
+    }
     #[test]
     fn stdout_reader_child() {
         if env::var_os("RIFE_TEST_STDOUT_CHILD").is_none() {

@@ -18,6 +18,7 @@ import hashlib
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -40,8 +41,10 @@ package, = [p for p in metadata["packages"] if p["id"] in metadata["workspace_de
 binary, = [t for t in package["targets"] if "bin" in t["kind"]]
 app = binary["name"]
 executable = runtime / (app + suffix)
-ffmpeg = runtime / "ffmpeg" / ("ffmpeg" + suffix)
-ffprobe = runtime / "ffmpeg" / ("ffprobe" + suffix)
+ffmpeg = shutil.which("ffmpeg")
+ffprobe = shutil.which("ffprobe")
+if ffmpeg is None or ffprobe is None:
+    parser.error("install FFmpeg and make sure ffmpeg and ffprobe are available on PATH")
 
 
 def run(*command, succeeds=True):

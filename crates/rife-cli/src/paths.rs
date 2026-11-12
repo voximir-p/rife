@@ -33,17 +33,6 @@ fn staging_directory_in(preferred: &Path, output_parent: &Path) -> Result<TempDi
         .context("unable to create temporary output staging directory")
 }
 
-pub(crate) fn tool_path(root: &Path, tool: &str) -> Result<PathBuf> {
-    let filename = format!("{tool}{}", env::consts::EXE_SUFFIX);
-    let path = root.join(config::FFMPEG_DIRECTORY).join(filename);
-    ensure!(
-        path.is_file(),
-        "missing FFmpeg tool: expected {}",
-        path.display()
-    );
-    Ok(path)
-}
-
 pub(crate) fn find_model(root: &Path, model: &Model) -> Result<PathBuf> {
     let dir = model.directory();
     let path = root.join(config::MODELS_DIRECTORY).join(dir);
@@ -285,18 +274,8 @@ mod tests {
         assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
     }
     #[test]
-    fn finds_only_ffmpeg_tools_and_models_in_the_new_layout() {
+    fn resolves_executable_relative_models_and_validates_files() {
         let runtime = temp();
-        fs::create_dir(runtime.path().join(config::FFMPEG_DIRECTORY)).unwrap();
-        for tool in ["ffmpeg", "ffprobe"] {
-            let expected = runtime
-                .path()
-                .join("ffmpeg")
-                .join(format!("{tool}{}", env::consts::EXE_SUFFIX));
-            assert!(tool_path(runtime.path(), tool).is_err());
-            fs::write(&expected, []).unwrap();
-            assert_eq!(tool_path(runtime.path(), tool).unwrap(), expected);
-        }
         for name in ["CustomModel", "rife-v9.99-custom"] {
             let model: Model = name.parse().unwrap();
             let directory = runtime

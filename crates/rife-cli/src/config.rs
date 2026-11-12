@@ -13,7 +13,6 @@ pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub(crate) fn temp_prefix() -> String {
     format!(".{APP_NAME}-")
 }
-pub(crate) const FFMPEG_DIRECTORY: &str = "ffmpeg";
 pub(crate) const MODELS_DIRECTORY: &str = "models";
 pub(crate) const PIXEL_FORMAT: &str = "rgb24";
 pub(crate) const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(50);
