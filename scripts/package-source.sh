@@ -89,7 +89,7 @@ def main():
             "This bundle includes project sources, locked Rust crates in vendor/,\n"
             "and pinned native sources and selected model assets in third_party/.\n"
             "Their original notices are retained. `SOURCE-REVISION` identifies the project commit.\n\n"
-            "Install Rust 1.88+, CMake 3.24+, and the platform C++/Vulkan toolchain\n"
+            "Install the Rust toolchain in rust-toolchain.toml, CMake 3.24+, and the C++/Vulkan toolchain\n"
             "and Make/Ninja build tools described in CONTRIBUTING.md. From this archive's root, run:\n\n"
             "```sh\ncargo build --release --locked --offline\n```\n\n"
             "No dependency fetch scripts are needed for the included selection.\n"

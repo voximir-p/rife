@@ -42,7 +42,8 @@ in `BUILD-SOURCE.md`.
   `Cargo.lock` and included in `THIRD-PARTY-LICENSES.html`.
 - **Rust standard library** — compiler-supplied library notices are included
   in [RUST-STANDARD-LIBRARY.html](LICENSES/RUST-STANDARD-LIBRARY.html), separately
-  from the Cargo dependency report.
+  from the Cargo dependency report. The release compiler is pinned in
+  `rust-toolchain.toml` so these notices match the standard library being linked.
 
 ## Separately downloaded runtime files
 

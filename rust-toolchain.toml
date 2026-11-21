@@ -1,0 +1,6 @@
+# Keep the release compiler aligned with LICENSES/RUST-STANDARD-LIBRARY.html.
+# Regenerate those notices whenever this version is updated.
+[toolchain]
+channel = "1.99.0"
+profile = "minimal"
+components = ["clippy", "rust-docs", "rustfmt"]

@@ -4,7 +4,7 @@ This guide covers building, checking, and extending rife. For command-line usage
 
 ## Toolchain
 
-- Rust 1.88 or newer
+- Rustup with the compiler and components in [`rust-toolchain.toml`](rust-toolchain.toml); the crates' minimum Rust version remains 1.88
 - CMake 3.24 or newer
 - Ninja on Windows; Make or Ninja on Linux (set `CMAKE_GENERATOR=Ninja` to select Ninja)
 - Git, a POSIX shell, and standard Unix utilities (Git Bash on Windows)
@@ -240,10 +240,25 @@ sh scripts/generate-third-party-licenses.sh --check
 
 Keep `THIRD-PARTY-LICENSES.html` current when workspace dependencies change. When a crate’s license changes, review `about.toml`. Native component attributions and license texts belong in `THIRD_PARTY_NOTICES.md` and `LICENSES/native/`; the release source archive includes these files and the GPL license text.
 
-The Rust standard-library notices are separate from Cargo crates. Install
-`rust-docs` and run `sh scripts/generate-rust-notices.sh` after a compiler
-update; `--check` verifies the checked-in copy against the release compiler.
-Release CI checks both reports before building the executable.
+The Rust standard-library notices are separate from Cargo crates and depend on
+the compiler version. `rust-toolchain.toml` pins the same compiler on Windows
+and Linux. The notice file is shipped in Rust's compiler package; installing
+`rust-docs` alone does not select a matching compiler. Rustup applies the pin
+to repository commands, including the existing release setup steps; the
+`rust-version` in `Cargo.toml` is a minimum, not a release-compiler pin.
+
+When updating the pinned compiler, regenerate and check its notices, then commit
+the toolchain file and notice changes together:
+
+```sh
+rustc --version
+sh scripts/generate-rust-notices.sh
+sh scripts/generate-rust-notices.sh --check
+```
+
+Explicit `cargo +TOOLCHAIN` commands or `RUSTUP_TOOLCHAIN` can override the pin
+for compatibility testing. Use the pinned compiler for release builds and
+notice verification. Release CI checks both license reports before building.
 
 With all tracked source changes committed, run `sh scripts/package-source.sh` to
 create `target/rife-source.tar.gz`. Newly added project files must be committed too: the script exports `HEAD`, so untracked files are never included. The release workflow publishes this bundle
