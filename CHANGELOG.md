@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-21
+
 ### Added
 
 - Bundle RIFE v4.26, v4.26-large, v4.25, v4.25-lite, v4.25-heavy, and v4.18 models in the executable, removing the need to download them separately. Custom external models remain supported.
@@ -68,7 +70,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The initial release targets Windows x64.
 - FFmpeg, FFprobe, and model files are downloaded and installed by the user; they are not included in the release archive.
 
-[unreleased]: https://github.com/voximir-p/rife/compare/v0.1.2...HEAD
+[unreleased]: https://github.com/voximir-p/rife/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/voximir-p/rife/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/voximir-p/rife/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/voximir-p/rife/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/voximir-p/rife/releases/tag/v0.1.0
