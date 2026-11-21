@@ -8,9 +8,10 @@ as the separate `rife-source.tar.gz` download. Binary archives
 include this notice, native component license files, and the generated Rust
 dependency license report. Download the source bundle from the same release
 as the executable; it includes pinned NCNN/glslang/Vulkan-Headers sources,
-locked Rust crate sources, and build instructions in `BUILD-SOURCE.md`.
+selected RIFE model assets, locked Rust crate sources, and build instructions
+in `BUILD-SOURCE.md`.
 
-## Code included in the executable
+## Components included in the executable
 
 - **RIFE reference implementation** — selected native inference code and
   shaders adapted from [Erlonealpha/rife-ncnn-vulkan-ex](https://github.com/Erlonealpha/rife-ncnn-vulkan-ex),
@@ -20,8 +21,13 @@ locked Rust crate sources, and build instructions in `BUILD-SOURCE.md`.
 - **RIFE model graph fixtures** — the three `.param` files in
   `crates/rife-core/tests/fixtures/` are copied from the upstream
   `rife-v4.25-lite`, `rife-v4.26`, and `rife-v4.26-large` model folders. Their
-  upstream MIT notice is included above. No model weight `.bin` files are
-  distributed by this project.
+  upstream MIT notice is included above.
+- **Bundled RIFE models** — the graph and weight pairs selected in
+  `third_party/models.txt` are embedded from the upstream repository at commit
+  `9c7ba227059cbf9c55e6a7cc7e0ca3b277533a12`, pinned in
+  `third_party/dependencies.lock`. The upstream MIT license is retained in
+  [RIFE-REFERENCE-MIT-LICENSE.txt](LICENSES/native/RIFE-REFERENCE-MIT-LICENSE.txt),
+  embedded with the assets, and included in the corresponding source bundle.
 - **NCNN** — statically linked neural-network runtime, licensed primarily
   under BSD 3-Clause. Its full license and notices for its included components
   are in [NCNN-LICENSE.txt](LICENSES/native/NCNN-LICENSE.txt).
@@ -40,10 +46,10 @@ locked Rust crate sources, and build instructions in `BUILD-SOURCE.md`.
 
 ## Separately downloaded runtime files
 
-rife does not redistribute FFmpeg, FFprobe, or model weights. The user supplies
-those files. Their licenses and any attribution requirements remain with their
-respective distributions; verify the terms for the exact FFmpeg build and model
-weights you download. FFmpeg's license can change when GPL-enabled components
-are compiled in; for example, FFmpeg documents that enabling libx264 makes the
+rife does not redistribute FFmpeg or FFprobe. The user supplies those programs
+and any additional external models. Their licenses and attribution requirements
+remain with their respective distributions; verify the terms for the exact
+FFmpeg build and any additional model weights you download. FFmpeg's license can
+change when GPL-enabled components are compiled in; for example, FFmpeg documents that enabling libx264 makes the
 FFmpeg build GPL-licensed. Do not redistribute such a build without meeting its
 license requirements.

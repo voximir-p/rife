@@ -1,3 +1,4 @@
 /target
 /third_party/ncnn/
 /third_party/Vulkan-Headers/
+/third_party/rife-ncnn-vulkan-ex/

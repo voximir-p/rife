@@ -29,7 +29,7 @@ pub(super) struct PreparedJob {
     pub args: Args,
     pub input: PathBuf,
     pub ffmpeg: PathBuf,
-    pub model: PathBuf,
+    pub model: crate::models::Source,
     pub info: media::VideoInfo,
     output_rate: Rate,
     quality: encode::QualityPlan,
@@ -54,7 +54,7 @@ impl PreparedJob {
             .context("executable has no parent directory")?;
         let ffmpeg = PathBuf::from("ffmpeg");
         let ffprobe = Path::new("ffprobe");
-        let model = paths::find_model(root, &args.model)?;
+        let model = crate::models::Source::resolve(root, &args.model)?;
         validate_options(&args, &destination)?;
         let staging = paths::staging_directory(destination.parent())?;
         let staged_output = destination.stage(staging.path())?;

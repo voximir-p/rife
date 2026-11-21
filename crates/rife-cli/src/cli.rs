@@ -36,7 +36,7 @@ pub(crate) fn make_styles() -> ClapStyles {
     name = APP_NAME,
     version = VERSION,
     about = env!("CARGO_PKG_DESCRIPTION"),
-    long_about = "Streaming video interpolation with embedded NCNN/Vulkan. Install FFmpeg and FFprobe on PATH, and place compatible model files in an adjacent models/ directory.",
+    long_about = "Streaming video interpolation with embedded RIFE models and NCNN/Vulkan. Install FFmpeg and FFprobe on PATH. Custom model files can be placed in an adjacent models/ directory.",
     styles = make_styles()
 )]
 pub(crate) struct Args {
@@ -44,8 +44,8 @@ pub(crate) struct Args {
     #[arg(short, long, value_name = "FILE")]
     pub(crate) input: PathBuf,
 
-    /// Model directory name beneath the executable-relative models folder
-    #[arg(short = 'm', long, default_value = Model::DEFAULT)]
+    /// Bundled model name or custom directory beneath the adjacent models folder
+    #[arg(short = 'm', long, default_value = env!("RIFE_DEFAULT_MODEL"), long_help = concat!("Bundled model name or custom directory beneath the adjacent models folder. External files override a bundled model with the same name.\n\nBundled models: ", env!("RIFE_EMBEDDED_MODELS")))]
     pub(crate) model: Model,
 
     /// Output FPS relative to input FPS (1 = same FPS, 2 = double; finite and >0)
@@ -212,7 +212,7 @@ mod tests {
     #[test]
     fn cli_defaults_are_supplied_by_clap() {
         let args = Args::try_parse_from([APP_NAME, "-i", "source.mp4", "out.mkv"]).unwrap();
-        assert_eq!(args.model, Model::default());
+        assert_eq!(args.model.directory(), env!("RIFE_DEFAULT_MODEL"));
         assert_eq!(args.gpu, DeviceSelection::default());
         let jobs = Jobs::default();
         assert_eq!(args.jobs.load, jobs.load);

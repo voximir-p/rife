@@ -1,3 +1,4 @@
 Name|Url|Tag|Commit|Submodules
 ncnn|https://github.com/Tencent/ncnn.git|20220729|b4ba207c18d3103d6df890c0e3a97b469b196b26|glslang
 Vulkan-Headers|https://github.com/KhronosGroup/Vulkan-Headers.git|v1.3.224|2b55157592bf4c639b76cc16d64acaef565cc4b5|
+rife-ncnn-vulkan-ex|https://github.com/Erlonealpha/rife-ncnn-vulkan-ex.git|ex|9c7ba227059cbf9c55e6a7cc7e0ca3b277533a12|

@@ -1,0 +1,8 @@
+# Models embedded in the CLI.
+# The first entry is the CLI's default model.
+rife-v4.25
+rife-v4.26
+rife-v4.26-large
+rife-v4.25-lite
+rife-v4.25-heavy
+rife-v4.18

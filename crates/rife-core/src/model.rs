@@ -8,7 +8,7 @@ use crate::{
 use anyhow::{Context, ensure};
 use std::collections::HashSet;
 
-/// An executable-relative model directory name; compatibility is graph-based.
+/// A model name; callers resolve its files and compatibility is graph-based.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Model(String);
 impl Model {

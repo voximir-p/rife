@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Bundle RIFE v4.26, v4.26-large, v4.25, v4.25-lite, v4.25-heavy, and v4.18 models in the executable, removing the need to download them separately. Custom external models remain supported.
 - Stream encoded media to stdout with `-` as the positional output, using NUT by default or a container selected through `-e "-f FORMAT"`.
 - Export interpolated frames as numbered image sequences with printf-style output patterns, preserving RGB pixels in lossless image formats.
 

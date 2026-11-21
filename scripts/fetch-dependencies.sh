@@ -19,9 +19,13 @@ fetch() {
 while IFS='|' read -r name url tag commit submodules; do
     [ "$name" = Name ] && continue
     [ -n "$name" ] || continue
+    if [ "$name" = rife-ncnn-vulkan-ex ]; then
+        sh "$root/scripts/fetch-models.sh"
+        continue
+    fi
     fetch "$name" "$url" "$tag" "$commit"
     if [ -n "$submodules" ]; then
         git -C "$root/third_party/$name" submodule update --init --depth 1 -- "$submodules"
     fi
 done < "$root/third_party/dependencies.lock"
-printf 'Pinned native sources are ready. Run cargo build --release.\n'
+printf 'Pinned native sources and model assets are ready. Run cargo build --release.\n'

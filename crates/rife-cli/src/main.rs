@@ -13,6 +13,7 @@ mod encode_timing_tests;
 mod encoder_options;
 mod images;
 mod media;
+mod models;
 mod output_lock;
 mod paths;
 mod pipeline;

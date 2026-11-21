@@ -87,10 +87,11 @@ fn load_model(
     ui: &Ui,
 ) -> Result<worker::NativeWorker> {
     let mut loading = ui.loading(&format!("model `{}`", job.args.model));
+    let model = job.model.materialize(job.staging.path(), cancel)?;
     let config = worker::Config::new(&job.args, (job.info.width, job.info.height), frames);
     let mut worker = worker::NativeWorker::spawn(
         &config,
-        &job.model,
+        &model,
         job.staging.path(),
         decoder.take_stdout(),
         cancel.clone(),

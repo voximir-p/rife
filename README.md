@@ -11,35 +11,21 @@
 - Detect scene cuts to avoid interpolating across unrelated frames.
 - Save interpolated frames as numbered images using printf-style output patterns.
 - Select the CPU, one or more GPUs, or automatic device selection.
-- Choose models by their directory name without maintaining a model-name allowlist.
-- Use FFmpeg and FFprobe installed on `PATH`, with model files beside the executable.
+- Use bundled RIFE models, or select compatible custom models by directory name.
+- Run from a single rife executable with FFmpeg and FFprobe installed on `PATH`.
 - No external RIFE executable, Python, CUDA, NCNN DLL, or OpenMP DLL is required at runtime.
 
 ## Running rife
 
 ### Runtime requirements
 
-The rife release does **not** include FFmpeg, FFprobe, or model weights. Install
-FFmpeg and FFprobe on your system and make both commands available on `PATH`.
-Place model files beside the rife executable (the directory name is `rife/`
-below):
+RIFE models and the inference backend are included in the executable. No model
+download or adjacent `models/` folder is required for the bundled models.
 
-```text
-rife/
-├── rife.exe
-└── models/
-    └── <model-directory>/
-        ├── flownet.param
-        └── flownet.bin
-```
+1. Install an FFmpeg build from the [official FFmpeg download page](https://ffmpeg.org/download.html) that includes `ffmpeg`, `ffprobe`, and the `libx264` encoder. Add the directory containing both programs to your `PATH` environment variable. On Windows, these are `ffmpeg.exe` and `ffprobe.exe`, usually in the build's `bin/` directory. Verify that `ffmpeg -version` and `ffprobe -version` work in the terminal where you run rife.
+2. Install a current graphics driver with Vulkan support for GPU inference. CPU inference can be selected with `-g -1`.
 
-1. Install an FFmpeg build from the [official FFmpeg download page](https://ffmpeg.org/download.html) that includes `ffmpeg`, `ffprobe`, and the `libx264` encoder. Add the directory containing both programs to your `PATH` environment variable. On Windows, these are `ffmpeg.exe` and `ffprobe.exe`, usually in the build's `bin/` directory. Verify that `ffmpeg -version` and `ffprobe -version` work in the terminal where you run rife. The adjacent `ffmpeg/` folder is no longer used.
-2. Download a RIFE NCNN model from the [upstream models directory](https://github.com/Erlonealpha/rife-ncnn-vulkan-ex/tree/ex/models). For the model you want, copy `flownet.param` and `flownet.bin` into `models/<model-directory>/`, preserving the directory name. For example, the default model belongs in `models/rife-v4.25/`.
-3. Install a current graphics driver with Vulkan support for GPU inference. CPU inference can be selected with `-g -1`.
-
-The model directory name is selected with `-m`; rife checks the model files and graph when loading. A directory name alone does not guarantee compatibility. Do not download or run the upstream RIFE executable; this application contains its own inference backend.
-
-The application has been built and runtime-tested on **Windows x64 and Linux x64**. macOS support has not yet been verified. The layout above shows the Windows executable name; on Linux, use `rife` without the `.exe` suffix, with the same adjacent `models/` directory. Model paths are resolved relative to the executable, independently of the current working directory.
+The application has been built and runtime-tested on **Windows x64 and Linux x64**. macOS support has not yet been verified. The executable is named `rife.exe` on Windows and `rife` on Linux.
 
 ### Examples
 
@@ -92,7 +78,7 @@ rife -i input.mp4 -e "-c:v ffv1 -c:a pcm_s16le" output.mkv
 | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | `-i, --input FILE`                          | **Required.** Input video.                                                                                         |
 | `OUTPUT`                                    | **Required.** Video filename, image sequence pattern such as `frames/frame_%08d.png`, or `-` for binary media on stdout. |
-| `-m, --model MODEL`                         | Model directory name. Default: `rife-v4.25`.                                                                       |
+| `-m, --model MODEL`                         | Bundled or custom model name. Default: `rife-v4.25`.                                                                       |
 | `-f, --fps-scale FACTOR`                    | Output FPS divided by input FPS. Default: `1`.                                                                     |
 | `-s, --speed FACTOR`                        | Playback speed. Default: `1`; `0.5` is half-speed and `2` is double-speed.                                         |
 | `-e, --extra-encoder-option OPTIONS`         | Extra FFmpeg output options, such as `-e -crf=23` or `-e "-crf 12 -b:a 10k"`. Repeatable.                         |
@@ -189,7 +175,11 @@ completed messages rather than live progress.
 
 ## Models
 
-The default model is `rife-v4.25`. Use `-m` to select another installed model. Model names are resolved directly as directory names under `models/`; for example, `-m rife-v4.28-large` looks for `models/rife-v4.28-large`.
+The default model is `rife-v4.25`. The executable also includes `rife-v4.26`, `rife-v4.26-large`, `rife-v4.25-lite`, `rife-v4.25-heavy`, and `rife-v4.18`. Select one with `-m`, for example `-m rife-v4.26-large`. Custom builds can include a different selection; `rife --help` lists their bundled models and default.
+
+Only the selected bundled model is unpacked into the job's temporary directory, then removed when the job finishes or is cancelled. The directory containing the executable does not need to be writable.
+
+For additional compatible models, place `flownet.param` and `flownet.bin` in `models/<model-name>/` beside the executable and select that name with `-m`. For example, `-m rife-v4.28-large` uses `models/rife-v4.28-large/`. External files override a bundled model with the same name; incomplete external models report an error. Custom model paths are relative to the executable, independently of the current working directory.
 
 Use compatible RIFE v4 models in NCNN format. Legacy RIFE models and arbitrary PyTorch weights are not supported.
 

@@ -187,6 +187,11 @@ with tempfile.TemporaryDirectory(prefix="rife-smoke-") as directory:
     # the actual native worker before another input frame or EOF is available.
     from concurrent.futures import ThreadPoolExecutor
     model_name = args.model or re.search(r"Loaded model `([^`]+)`", log).group(1)
+    # The private worker API accepts files; public CLI jobs extract bundled
+    # assets themselves. Use fetched source assets for this worker-only check.
+    model_directory = runtime / "models" / model_name
+    if not model_directory.is_dir():
+        model_directory = root / "third_party/rife-ncnn-vulkan-ex/models" / model_name
     live_state = test_root / "live-worker"
     live_state.mkdir()
     live_config = live_state / "config.json"
@@ -195,7 +200,7 @@ with tempfile.TemporaryDirectory(prefix="rife-smoke-") as directory:
         "threshold": "1", "devices": args.gpu, "jobs": "1:2:2", "stream_output": True,
     }))
     native = subprocess.Popen([str(executable), "--__rife-native-worker", str(live_config),
-                               str(runtime / "models" / model_name)], stdin=subprocess.PIPE,
+                               str(model_directory)], stdin=subprocess.PIPE,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     frame_bytes = 64 * 64 * 3
     with ThreadPoolExecutor(max_workers=1) as readers:
@@ -290,8 +295,12 @@ with tempfile.TemporaryDirectory(prefix="rife-smoke-") as directory:
                 assert first_byte.result(timeout=args.timeout), "Stream ended before cancellation"
                 for staging in os_temp.glob(f".{app}-*"):
                     assert {item.name for item in staging.iterdir()} <= {
-                        "native-worker.json", "native.cancel", "chapters.ffmetadata"
+                        "native-worker.json", "native.cancel", "chapters.ffmetadata", "model"
                     }, "Stream frames were staged on disk"
+                    if (staging / "model").exists():
+                        assert {item.name for item in (staging / "model").iterdir()} == {
+                            "flownet.param", "flownet.bin", "LICENSE"
+                        }, "Unexpected files in extracted model"
             finally:
                 interrupted.send_signal(signal.SIGINT)
                 _, errors = interrupted.communicate(timeout=args.timeout)

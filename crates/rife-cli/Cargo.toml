@@ -30,6 +30,7 @@ serde.workspace = true
 serde_json.workspace = true
 shlex.workspace = true
 tempfile.workspace = true
+rust-embed.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 fs2.workspace = true

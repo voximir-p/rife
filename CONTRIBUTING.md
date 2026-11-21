@@ -36,7 +36,19 @@ sh scripts/fetch-dependencies.sh
 cargo build --locked --release
 ```
 
-The fetch script verifies the checked-out revisions and leaves unexpected existing sources untouched. Builds can use existing source trees by setting `RIFE_NCNN_SOURCE` and `RIFE_VULKAN_HEADERS`.
+The fetch script verifies the checked-out revisions and leaves unexpected existing sources untouched. Builds can use existing native source trees by setting `RIFE_NCNN_SOURCE` and `RIFE_VULKAN_HEADERS`.
+
+### Selecting bundled models
+
+Edit [`third_party/models.txt`](third_party/models.txt) to choose which upstream model directories to embed. Use one name per line; blank lines and lines starting with `#` are ignored. The first entry becomes the CLI default. For example, a smaller build can contain just:
+
+```text
+rife-v4.25-lite
+```
+
+The upstream model repository and exact commit are pinned in `third_party/dependencies.lock`. `sh scripts/fetch-dependencies.sh` also fetches the selection; `sh scripts/fetch-models.sh` fetches only model assets. The CLI build script automatically runs the model fetcher if assets are missing and verifies existing Git checkouts. Git, Python 3 and `sh` (Git Bash on Windows) are needed for fetching. Only selected model directories are checked out for new clones; expanding an existing sparse checkout preserves its prior selection. Unexpected revisions and local changes are rejected without resetting user files. To change the pinned revision, remove or move the old fetched checkout first.
+
+`rust-embed` embeds only the selected `flownet.param`/`flownet.bin` pairs and their upstream MIT license. Debug builds also embed assets, so runtime behavior does not depend on the source checkout. Changing the selection or asset files triggers a rebuild. Complete Corresponding Source bundles include these assets and build offline without fetching or requiring Git/Python for model preparation. Model embedding increases executable size; removing a name from the selection excludes its bytes even if the fetched checkout still has that directory.
 
 ## Checks and runtime smoke test
 
@@ -60,17 +72,20 @@ The application and these tests launch `ffmpeg` and `ffprobe` through `PATH`.
 Set `RIFE_TEST_FFMPEG` and `RIFE_TEST_FFPROBE` to select explicit binaries for
 the opt-in tests only; these variables do not configure the application.
 
-The smoke script exercises the built CLI through the runtime directory layout. Put the executable and one compatible model under `runtime/` as shown in the README, install FFmpeg and FFprobe on `PATH`, then run:
+The smoke script exercises the built CLI through the runtime directory layout. Put the executable under `runtime/`, install FFmpeg and FFprobe on `PATH`, then run:
 
 ```sh
 # On Windows, copy target/release/rife.exe to runtime/rife.exe instead.
+mkdir -p runtime
 cp target/release/rife runtime/rife
 sh scripts/smoke.sh
 ```
 
 Pass a different runtime directory as the first argument to `smoke.sh`. The
 suite uses the CLI's default model unless `--model DIRECTORY_NAME` selects
-another installed model. It runs on CPU by default; use `--gpu 0` for GPU 0
+another bundled or external model. The direct private-worker check uses fetched
+source model files when no external model is installed. It runs on CPU by
+default; use `--gpu 0` for GPU 0
 (`RIFE_SMOKE_GPU` is also supported). `--timeout SECONDS` changes the per-command
 deadlock guard from 120 seconds. Fixtures and outputs use an isolated OS
 temporary directory, so the suite does not need a writable checkout or a
@@ -80,7 +95,7 @@ combination being validated.
 The regular workspace test command does not run the opt-in native inference test. Point it at an installed compatible model and run it serially:
 
 ```sh
-RIFE_TEST_MODEL_DIR="$PWD/runtime/models/<model-directory>" \
+RIFE_TEST_MODEL_DIR="$PWD/third_party/rife-ncnn-vulkan-ex/models/<model-directory>" \
   cargo test -p rife-core --release --lib engine::native_tests -- --ignored --test-threads=1
 ```
 
@@ -120,6 +135,7 @@ The executable entry point only dispatches private worker mode or the CLI. Withi
 | `encode.rs` and `encode/` | Command construction, container presets, quality, and audio timing |
 | `worker.rs` and `worker/` | Native process supervision, private protocol, runtime, and RGB frame reading |
 | `diagnostics.rs` | Shared backend error presentation data |
+| `models.rs` | Bundled asset resolution and cancellable extraction into job-owned staging |
 
 Keep staging alive until all children are reaped, and release the destination
 lock after staging cleanup. Prepared jobs own both resources; planned jobs add
@@ -204,7 +220,7 @@ frames and does not apply the application's FPS filter. See the official
 
 ## Changing model support or native code
 
-Model files must remain user-provided. To add support for a model family, update the runtime graph validation, model fixtures, enabled native operators, and model compatibility documentation together. Validate both loading and inference using the native test and smoke workflow where applicable.
+Bundled model selection belongs in `third_party/models.txt`; custom external models remain supported. Keep extracted assets in parent-owned staging until native workers have exited. Extract only the selected model, check cancellation between bounded writes, and retain its upstream license. To add support for a model family, update the runtime graph validation, model fixtures, enabled native operators, and model compatibility documentation together. Validate both loading and inference using the native test and smoke workflow where applicable.
 
 When changing the native dependency set or copied native code, update `third_party/dependencies.lock`, the relevant build configuration, `LICENSES/native/`, and `THIRD_PARTY_NOTICES.md`. Do not edit fetched dependency sources as part of the normal build; apply required local changes through the project’s build overlay. Each overlay replacement must validate its own anchor; cancellation patches also check the expected overload count in the pinned source.
 
@@ -227,13 +243,13 @@ Release CI checks both reports before building the executable.
 
 With all tracked source changes committed, run `sh scripts/package-source.sh` to
 create `target/rife-source.tar.gz`. The release workflow publishes this bundle
-alongside the binary. It includes pinned native sources, locked Rust crates,
-their notices, and build scripts. Its generated Cargo configuration supports
+alongside the binary. It includes pinned native sources, selected model assets,
+locked Rust crates, their notices, and build scripts. Its generated Cargo configuration supports
 `cargo build --release --locked --offline` after installing the documented
 toolchains. Dependency downloads require network access when packaging;
-FFmpeg, model weights, Git history, and machine-local files are excluded.
+FFmpeg, unselected models, Git history, and machine-local files are excluded.
 Untracked files, including cargo-dist's generated manifests, are excluded from
 the source archive and do not block packaging. Staged or unstaged changes to
 tracked files still fail the check, with the affected paths listed in the error.
 
-FFmpeg binaries and RIFE model weights are supplied separately by users. Do not add them to source or release artifacts. See the README and third-party notices for runtime and redistribution information.
+Keep fetched model repositories and weights out of project Git history. Selected weights are embedded in release executables and included in the corresponding source bundle with their upstream MIT notice. FFmpeg binaries remain user-supplied and must not be added to source or release artifacts. See the README and third-party notices for runtime and redistribution information.
