@@ -36,16 +36,21 @@ pub(crate) fn make_styles() -> ClapStyles {
     name = APP_NAME,
     version = VERSION,
     about = env!("CARGO_PKG_DESCRIPTION"),
-    long_about = "Streaming video interpolation with embedded RIFE models and NCNN/Vulkan. Install FFmpeg and FFprobe on PATH. Custom model files can be placed in an adjacent models/ directory.",
+    long_about = "Streaming video interpolation with embedded RIFE models and NCNN/Vulkan. Install FFmpeg and FFprobe on PATH. Custom model files can be placed in models/<MODEL>/ beside the executable.",
     styles = make_styles()
 )]
 pub(crate) struct Args {
     /// Input video file (any format supported by the installed FFmpeg build)
-    #[arg(short, long, value_name = "FILE")]
+    #[arg(
+        short,
+        long,
+        value_name = "FILE",
+        long_help = "Local input video file supported by the installed FFmpeg build. Standard input, URLs, and image-sequence inputs are not supported."
+    )]
     pub(crate) input: PathBuf,
 
     /// Bundled model name or custom directory beneath the adjacent models folder
-    #[arg(short = 'm', long, default_value = env!("RIFE_DEFAULT_MODEL"), long_help = concat!("Bundled model name or custom directory beneath the adjacent models folder. External files override a bundled model with the same name.\n\nBundled models: ", env!("RIFE_EMBEDDED_MODELS")))]
+    #[arg(short = 'm', long, default_value = env!("RIFE_DEFAULT_MODEL"), long_help = concat!("Bundled model name, or a custom directory in models/<MODEL>/ beside the executable. External files override a bundled model with the same name.\n\nBundled models: ", env!("RIFE_EMBEDDED_MODELS")))]
     pub(crate) model: Model,
 
     /// Output FPS relative to input FPS (1 = same FPS, 2 = double; finite and >0)
@@ -69,9 +74,9 @@ pub(crate) struct Args {
     #[arg(short, long, default_value_t = DeviceSelection::default(), value_name = "GPU", allow_hyphen_values = true)]
     pub(crate) gpu: DeviceSelection,
 
-    /// Load buffering:inference workers per GPU:save buffering
+    /// Load buffering:inference workers per device:save buffering
     ///
-    /// PROCESS counts follow --gpu order, e.g. 1:2,3:2 for two GPUs.
+    /// PROCESS counts follow --gpu order, e.g. 1:2,3:2 for two devices.
     /// One PROCESS count applies to all devices. LOAD and SAVE are shared.
     #[arg(
         short = 'j',
@@ -93,7 +98,10 @@ pub(crate) struct Args {
     pub(crate) verbose: bool,
 
     /// Output file, image sequence pattern (e.g. frame_%08d.png), or - for NUT on stdout
-    #[arg(value_name = "OUTPUT")]
+    #[arg(
+        value_name = "OUTPUT",
+        long_help = "Output video filename, numbered image pattern (%d or %0Nd), or - for encoded media on stdout (NUT by default). File outputs need an existing parent directory and a filename extension. Progress and errors go to stderr."
+    )]
     pub(crate) output: PathBuf,
 }
 
@@ -244,7 +252,7 @@ mod tests {
         ] {
             let text = help.to_string();
             let defaults = [
-                Model::DEFAULT.to_owned(),
+                env!("RIFE_DEFAULT_MODEL").to_owned(),
                 DeviceSelection::default().to_string(),
                 Jobs::default().to_string(),
                 StreamOptions::default().threshold.to_string(),

@@ -17,15 +17,20 @@
 
 ## Running rife
 
-### Runtime requirements
+The instructions below follow the current source tree. For version-specific setup, use the README included in your release archive.
+
+### Installation and runtime requirements
 
 RIFE models and the inference backend are included in the executable. No model
 download or adjacent `models/` folder is required for the bundled models.
 
-1. Install an FFmpeg build from the [official FFmpeg download page](https://ffmpeg.org/download.html) that includes `ffmpeg`, `ffprobe`, and the `libx264` encoder. Add the directory containing both programs to your `PATH` environment variable. On Windows, these are `ffmpeg.exe` and `ffprobe.exe`, usually in the build's `bin/` directory. Verify that `ffmpeg -version` and `ffprobe -version` work in the terminal where you run rife.
-2. Install a current graphics driver with Vulkan support for GPU inference. CPU inference can be selected with `-g -1`.
+1. Download the archive for your platform from the [releases page](https://github.com/voximir-p/rife/releases) and extract it. Add the directory containing `rife.exe` (Windows) or `rife` (Linux) to `PATH`, or invoke the executable by its full path. Run `rife --version` to check the installation.
+2. Install an FFmpeg build from the [official FFmpeg download page](https://ffmpeg.org/download.html) that includes `ffmpeg`, `ffprobe`, and the `libx264` encoder. Add the directory containing both programs to your `PATH` environment variable. On Windows, these are `ffmpeg.exe` and `ffprobe.exe`, usually in the build's `bin/` directory. Verify that `ffmpeg -version` and `ffprobe -version` work in the terminal where you run rife.
+3. Make the system Vulkan loader available (`vulkan-1.dll` on Windows or `libvulkan.so.1` on Linux). GPU inference also requires a compatible graphics driver. Select CPU inference with `-g -1`; the loader is still required to start the executable. Linux also uses the system C/C++ runtime libraries.
 
-The application has been built and runtime-tested on **Windows x64 and Linux x64**. macOS support has not yet been verified. The executable is named `rife.exe` on Windows and `rife` on Linux.
+Releases target **Windows x64 and Linux x64**, both of which have been built and runtime-tested. macOS and other architectures have not been verified.
+
+Inputs must be local video files. Standard input, URLs, and image-sequence inputs are not supported. For file outputs, the parent directory must already exist and the filename must have an extension. Use `rife --help` for the options and bundled models in your executable.
 
 ### Examples
 
@@ -74,21 +79,25 @@ rife -i input.mp4 -e "-c:v ffv1 -c:a pcm_s16le" output.mkv
 
 ### Command-line options
 
-| Option                                      | Description                                                                                                        |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `-i, --input FILE`                          | **Required.** Input video.                                                                                         |
-| `OUTPUT`                                    | **Required.** Video filename, image sequence pattern such as `frames/frame_%08d.png`, or `-` for binary media on stdout. |
-| `-m, --model MODEL`                         | Bundled or custom model name. Default: `rife-v4.25`.                                                                       |
-| `-f, --fps-scale FACTOR`                    | Output FPS divided by input FPS. Default: `1`.                                                                     |
-| `-s, --speed FACTOR`                        | Playback speed. Default: `1`; `0.5` is half-speed and `2` is double-speed.                                         |
-| `-e, --extra-encoder-option OPTIONS`         | Extra FFmpeg output options, such as `-e -crf=23` or `-e "-crf 12 -b:a 10k"`. Repeatable.                         |
-| `-g, --gpu GPU`                             | `auto` or comma-separated device IDs. Use `-1` for CPU; it can be combined with GPU IDs.                           |
-| `-j, --jobs LOAD:PROCESS[,PROCESS...]:SAVE` | Shared input/output buffering budgets and per-device worker counts. Default: `1:2:2`.                              |
-| `-t, --threshold THRESHOLD`                 | Scene-cut threshold from `0` to `1`. Default: `0.3`; `1` disables scene detection.                                 |
-| `-y, --overwrite`                           | Replace an existing output. Waits if another rife process holds its output lock.                                   |
-| `-v, --verbose`                             | Show model, dimensions, frame rates, and device details.                                                            |
+| Option | Description |
+| --- | --- |
+| `-i, --input FILE` | **Required.** Input video file. |
+| `OUTPUT` | **Required.** Video filename, image sequence pattern such as `frames/frame_%08d.png`, or `-` for encoded media on stdout. |
+| `-m, --model MODEL` | Bundled or custom model name. Default: `rife-v4.25`. |
+| `-f, --fps-scale FACTOR` | Output FPS divided by input FPS. Default: `1`. |
+| `-s, --speed FACTOR` | Playback speed. Default: `1`; `0.5` is half-speed and `2` is double-speed. |
+| `-e, --extra-encoder-option OPTIONS` | Repeatable FFmpeg output options, such as `-e -crf=23` or `-e "-crf 12 -b:a 128k"`. |
+| `-g, --gpu GPU` | `auto` or comma-separated device IDs. Use `-1` for CPU; it can be combined with GPU IDs. Default: `auto`. |
+| `-j, --jobs LOAD:PROCESS[,PROCESS...]:SAVE` | Shared input/output buffering budgets and per-device worker counts. Default: `1:2:2`. |
+| `-t, --threshold THRESHOLD` | Scene-cut threshold from `0` to `1`. Default: `0.3`; `0` treats every pair as a cut and `1` disables detection. |
+| `-y, --overwrite` | Replace an existing output. Waits if another rife process holds its output lock. |
+| `-v, --verbose` | Show model, dimensions, frame rates, and device details. |
+| `-h, --help` | Show usage and defaults; `--help` also lists bundled model names. |
+| `-V, --version` | Show the executable's version. |
 
 FPS scale and playback speed must be finite, positive numbers. When speed changes, audio is re-encoded to match the final video duration while preserving pitch. At normal speed, audio is copied unless an encoder is selected with `-e "-c:a ENCODER"`. The output container must support a copied audio codec; otherwise, choose a compatible encoder.
+
+`LOAD` and `SAVE` control shared buffering budgets; `PROCESS` gives the inference worker count for each selected device. One count applies to every device. For example, `-g -1,0 -j 1:2,3:2` uses two CPU workers and three workers on GPU 0.
 
 Extra encoder options apply to both videos and image sequences. Each value uses POSIX-style quoting and escapes to split flags and values; no shell, variable expansion, or command substitution is used. Options are appended after FFmpeg's input declarations and rife's defaults, before the output filename. Repeat `-e` to append more options in order; later settings take precedence. For example, use `-e "-metadata title='Hello world'"` to keep a value containing spaces together. Input paths and progress options remain managed by rife.
 
@@ -102,7 +111,7 @@ GIF output uses a palette generated from the video for better colors, including 
 
 Use `-` as the positional output to write encoded media to stdout. The default is
 NUT with H.264 video and the usual CRF/bitrate and audio policy; `ffplay -` detects
-it automatically. After the initial validation and frame-counting pass, original,
+it automatically. The playback examples require `ffplay` on `PATH`. After the initial validation and frame-counting pass, original,
 interpolated, and held frames are sent in timeline order as they become ready.
 Frames travel through bounded memory buffers and OS pipes, without temporary
 frame files or a completed video waiting on disk.
@@ -121,7 +130,7 @@ never sent to stdout.
 
 Extra options can override the low-delay defaults. Custom encoders, formats, and
 the receiving player may introduce their own buffering. For example,
-`-e "-f matroska"` selects the previous stdout container, whose muxer can delay
+`-e "-f matroska"` selects Matroska, whose muxer can delay
 packets while completing a cluster. Processing runs as fast as possible; it does
 not insert extra frames to cover playback stalls.
 
@@ -144,12 +153,14 @@ Output conflicts and invalid argument combinations are checked before frame coun
 
 Frame counting follows the decoded, normalized timeline rather than trusting a
 frame-count tag or a duration estimate. It works with variable frame rates and
-missing frame-count metadata. The counting pass avoids RGB conversion and frame transfers
-to reduce startup overhead.
+missing frame-count metadata. Variable-frame-rate input is normalized to a constant frame rate before
+interpolation, so the counted total can differ from the number of source
+frames. The counting pass avoids RGB conversion and frame transfers, but still
+decodes the video once before processing begins.
 
-Temporary processing files use the OS temporary directory. For file outputs, if rife cannot create a temporary folder there, it uses the output's parent directory. Finished files are transferred to the output location after encoding succeeds, including when that location is on another drive. Streaming output requires a usable OS temporary directory for processing state.
+Temporary processing files use the OS temporary directory. For file outputs, if rife cannot create a temporary folder there, it uses the output's parent directory. Finished files are transferred to the output location after encoding succeeds, including when that location is on another drive. Temporary storage must have room for the selected bundled model and, for file outputs, the encoded result or image sequence. Streaming output requires a usable OS temporary directory for processing state and extracted model files; it does not stage media frames or a completed video.
 
-Backend failures show the actual failure reason and raw diagnostics, followed by a blank line. FFmpeg and FFprobe failures end with `error: media processing failed`; native inference failures end with `error: native backend failed`. Failed jobs clean up their temporary files and any output locks, and preserve existing file outputs.
+Backend failures show the actual failure reason and raw diagnostics, followed by a blank line. FFmpeg and FFprobe failures end with `error: media processing failed`; native inference failures end with `error: native backend failed`. Reported failures and Ctrl+C cancellations clean up temporary files and output locks, and preserve existing file outputs.
 
 Verbose output shows Source and Target first, followed by frame counting, model loading, Device, and processing. Counting shows the number of video frames counted so far, then changes to green `Counted N frames in total` when finished. Loading changes to green Loaded when the model is ready.
 
@@ -168,10 +179,21 @@ below one hour and `HH:MM:SS` from one hour onward, for example
 When interpolation ends, the Processed line reports its elapsed time. A separate
 Saving progress bar, in the same color as Processing, uses elapsed/estimated total
 time with its own timer and no fps field. The final green Saved line reports the
-saving time; both summaries remain visible. Live status rows keep the cursor at
+remaining saving time, including output publication; both summaries remain visible.
+Encoding already runs alongside interpolation, so Saved does not measure the
+entire encoding operation. Live status rows keep the cursor at
 the start of the row and disappear on Ctrl+C while leaving the terminal’s own
 cancellation indicator and cursor position unchanged. Redirected logs contain
-completed messages rather than live progress.
+completed messages rather than live progress. Completed durations below a minute
+use two decimal places, such as `17.94s`; longer durations use minutes and rounded
+seconds, such as `1m 30s` or `1m 0s`.
+
+### Exit status
+
+- `0`: completed successfully, or displayed help/version information.
+- `1`: validation, processing, model, filesystem, or backend failure.
+- `2`: command-line parsing error.
+- `130`: cancelled with Ctrl+C.
 
 ## Models
 
@@ -193,7 +215,7 @@ Use compatible RIFE v4 models in NCNN format. Legacy RIFE models and arbitrary P
 
 ## License
 
-Licensed under **GPL-3.0-only**; see [LICENSE](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md). Each release provides a separate `rife-source.tar.gz` containing project and dependency sources.
+Licensed under **GPL-3.0-only**; see [LICENSE](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md). Each release provides a separate `rife-source.tar.gz` containing project sources, locked dependencies, and the selected model assets for offline builds.
 
 ## Contributing
 

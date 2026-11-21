@@ -86,12 +86,16 @@ def main():
         (source / "SOURCE-REVISION").write_text(revision + "\n")
         (source / "BUILD-SOURCE.md").write_text(
             "# Building the release source\n\n"
-            "This bundle includes locked Rust crates in vendor/ and pinned native sources\n"
-            "and selected model assets in third_party/. Their original notices are retained.\n"
-            "Install Rust 1.88+, CMake, Ninja and the platform C++/Vulkan toolchain\n"
-            "described in CONTRIBUTING.md, then run cargo build --release --locked --offline.\n"
-            "The dependency fetch scripts are unnecessary for this extracted bundle.\n"
-            "Model assets are embedded at build time; FFmpeg/FFprobe must be on PATH.\n")
+            "This bundle includes project sources, locked Rust crates in vendor/,\n"
+            "and pinned native sources and selected model assets in third_party/.\n"
+            "Their original notices are retained. `SOURCE-REVISION` identifies the project commit.\n\n"
+            "Install Rust 1.88+, CMake 3.24+, and the platform C++/Vulkan toolchain\n"
+            "and Make/Ninja build tools described in CONTRIBUTING.md. From this archive's root, run:\n\n"
+            "```sh\ncargo build --release --locked --offline\n```\n\n"
+            "No dependency fetch scripts are needed for the included selection.\n"
+            "`third_party/models.txt` selects embedded models; its first entry sets the CLI default.\n"
+            "Offline builds can select models whose files are already included in this bundle.\n\n"
+            "FFmpeg and FFprobe must be installed on PATH to run the resulting CLI.\n")
         # Fail if the vendored graph cannot resolve without the publisher's cache.
         empty_home = Path(temporary) / "cargo-home"
         empty_home.mkdir()

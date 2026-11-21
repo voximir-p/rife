@@ -50,6 +50,6 @@ rife does not redistribute FFmpeg or FFprobe. The user supplies those programs
 and any additional external models. Their licenses and attribution requirements
 remain with their respective distributions; verify the terms for the exact
 FFmpeg build and any additional model weights you download. FFmpeg's license can
-change when GPL-enabled components are compiled in; for example, FFmpeg documents that enabling libx264 makes the
-FFmpeg build GPL-licensed. Do not redistribute such a build without meeting its
+change when GPL-enabled components are compiled in; for example, FFmpeg documents
+that enabling libx264 makes the FFmpeg build GPL-licensed. Do not redistribute such a build without meeting its
 license requirements.
